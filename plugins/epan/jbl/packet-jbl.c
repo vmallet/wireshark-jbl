@@ -56,10 +56,11 @@ static int hf_jbl_arg_3 = -1;
 static int hf_jbl_arg_4 = -1;
 static int hf_jbl_arg_5 = -1;
 
-static int hf_jbl_res_int_1 = -1;
-static int hf_jbl_res_bool_1 = -1;
-static int hf_jbl_res_str_1 = -1;
-static int hf_jbl_res_rest = -1;
+static int hf_jbl_results = -1;
+static int hf_jbl_res_int = -1;
+static int hf_jbl_res_bool = -1;
+static int hf_jbl_res_str = -1;
+static int hf_jbl_res_other = -1;
 
 static int hf_jbl_kwargs = -1;
 
@@ -703,20 +704,6 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
     // TODO: name it
     //TODO: do it;
     
-
-//    // event name
-//    p_next++;
-//    if (p_next->type != MSGPACK_OBJECT_STR) {
-//        error("Event name should be string");
-//        return 1;
-//    }
-//    const char *event_name = get_object_str(p_next);
-//    proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
-//    info_builder_append(&info_builder, ", \"");
-//    info_builder_append_abbrev_max(&info_builder, event_name, 48);
-//    info_builder_append(&info_builder, "\"");
-    
-
     
     // event args
     p_next++;
@@ -730,58 +717,33 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
     }
     
     guint res_size = (guint) res->via.u64;
-    //TODO: it's not hf_jbl_args, it's res
-    proto_item *item3 = proto_tree_add_uint(jbl, hf_jbl_args, tvb, offset, 0, res_size); //TODO
+    proto_item *item_res = proto_tree_add_uint(jbl, hf_jbl_results, tvb, offset, 0, res_size); //TODO
     msgpack_object * ap = res->via.array.ptr;
     msgpack_object * const apend = res->via.array.ptr + res_size;
     if (res_size == 0) {
-        proto_item_append_text(item3, " (empty)");
+        proto_item_append_text(item_res, " (empty)");
     } else {
-        proto_tree * tres = proto_item_add_subtree(item3, ett_jbl);
-        //TODO: do better with the hack below
-        bool rint = false;
-//        bool rbool = false;
-//        bool rstr = false;
-        bool use_rest = false;
+        proto_tree * tres = proto_item_add_subtree(item_res, ett_jbl);
         char rbuf[1024]; // TODO: really?
-        rbuf[0] = '\0';
-        char *pbuf = rbuf;
         for (; ap < apend; ++ap) {
-            if (!use_rest) {
-                switch (ap->type) {
-                    case MSGPACK_OBJECT_POSITIVE_INTEGER:
-                        if (rint) {
-                            use_rest = true;
-                        } else {
-                            gint64 v64 = ap->via.i64;
-                            proto_tree_add_int64(tres, hf_jbl_res_int_1, tvb, offset, 0, v64);
-                            rint = true;
-                        }
-                        break;
-                    default:
-                        use_rest = true;
-                        break;
-                }
+            switch (ap->type) {
+                case MSGPACK_OBJECT_NEGATIVE_INTEGER:
+                    proto_tree_add_int64(tres, hf_jbl_res_int, tvb, offset, 0, ap->via.i64);
+                    break;
+                case MSGPACK_OBJECT_POSITIVE_INTEGER:
+                    proto_tree_add_int64(tres, hf_jbl_res_int, tvb, offset, 0, ap->via.u64);
+                    break;
+                case MSGPACK_OBJECT_BOOLEAN:
+                    proto_tree_add_boolean(tres, hf_jbl_res_bool, tvb, offset, 0, ap->via.boolean);
+                    break;
+                case MSGPACK_OBJECT_STR:
+                    proto_tree_add_string(tres, hf_jbl_res_str, tvb, offset, 0, get_object_str(ap));
+                    break;
+                default:
+                    msgpack_object_print_buffer(rbuf, sizeof(rbuf) - 1, *ap);
+                    proto_tree_add_string(tres, hf_jbl_res_other, tvb, offset, 0, rbuf);
+                    break;
             }
-            
-            if (use_rest) {
-                if (*rbuf) {
-                    strcat(rbuf, ", "); //TODO: len safety
-                }
-                msgpack_object_print_buffer(pbuf, sizeof(rbuf) - (pbuf - rbuf), *ap);
-                pbuf = rbuf + strlen(rbuf);
-            }
-//            const char *str = get_object_str(ap);
-//            int * hf_arg = next_hf_arg();
-//            if (hf_arg == NULL) {
-//                fprintf(stderr, "Ran out of args for: %s\n", str);
-//            } else {
-//                proto_tree_add_string(targs, *hf_arg, tvb, offset, 0, str);
-//            }
-        }
-        
-        if (*rbuf) {
-            proto_tree_add_string(tres, hf_jbl_res_rest, tvb, offset, 0, rbuf);
         }
     }
 
@@ -1085,17 +1047,20 @@ void proto_register_jbl(void) {
         { &hf_jbl_arg_5,
             { "Args #4", "jbl.arg_5", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_res_int_1,
-            { "Int result #1", "jbl.res_int_1", FT_INT64, BASE_DEC,
+        { &hf_jbl_results,
+            { "Results", "jbl.results", FT_UINT32, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_res_bool_1,
-            { "Bool result #1", "jbl.res_bool_1", FT_BOOLEAN, BASE_NONE,
+        { &hf_jbl_res_int,
+            { "Int", "jbl.res_int", FT_INT64, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_res_str_1,
-            { "String result #1", "jbl.res_str_1", FT_STRING, BASE_NONE,
+        { &hf_jbl_res_bool,
+            { "Bool", "jbl.res_bool", FT_BOOLEAN, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_res_rest,
-            { "Rest of results", "jbl.res_rest", FT_STRING, BASE_NONE,
+        { &hf_jbl_res_str,
+            { "String", "jbl.res_str", FT_STRING, BASE_NONE,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_res_other,
+            { "Other", "jbl.res_other", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_sub_id,
             { "Sub Id", "jbl.sub_id", FT_UINT32, BASE_DEC,
