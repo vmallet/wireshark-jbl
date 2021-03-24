@@ -50,11 +50,10 @@ static int hf_jbl_kwarg_service = -1;
 //static int hf_jbl_param_xxx = -1;
 
 static int hf_jbl_args = -1;
-static int hf_jbl_arg_1 = -1;
-static int hf_jbl_arg_2 = -1;
-static int hf_jbl_arg_3 = -1;
-static int hf_jbl_arg_4 = -1;
-static int hf_jbl_arg_5 = -1;
+static int hf_jbl_arg_int = -1;
+static int hf_jbl_arg_bool = -1;
+static int hf_jbl_arg_str = -1;
+static int hf_jbl_arg_other = -1;
 
 static int hf_jbl_results = -1;
 static int hf_jbl_res_int = -1;
@@ -71,20 +70,6 @@ static gint ett_jbl = -1;
 
 
 static GHashTable *jbl_params = NULL;
-
-
-static int *jbl_arg_list[] = {
-    &hf_jbl_arg_1,
-    &hf_jbl_arg_2,
-    &hf_jbl_arg_3,
-    &hf_jbl_arg_4,
-    &hf_jbl_arg_5
-};
-
-static const int jbl_arg_list_length = sizeof(jbl_arg_list) / sizeof(jbl_arg_list[0]);
-
-static int jbl_cur_arg = 0;
-
 
 
 static const value_string req_names[] = {
@@ -235,15 +220,7 @@ static void init_param_table() {
 #define INFO_BUILDER_SIZE 512
 
 static void reset_state() {
-    jbl_cur_arg = 0;
     info_builder_init(&info_builder, INFO_BUILDER_SIZE);
-}
-
-static int * next_hf_arg() {
-    if (jbl_cur_arg < jbl_arg_list_length) {
-        return jbl_arg_list[jbl_cur_arg++];
-    }
-    return NULL;
 }
 
 
@@ -318,8 +295,6 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
     
     guint64 num = p_next->via.u64;
     proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, num);
-    info_builder_append(&info_builder, "Seq=");
-    info_builder_append_num(&info_builder, num);
                             
 
     // Empty map
@@ -336,10 +311,7 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
     }
     const char *event_name = get_object_str(p_next);
     proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
-    info_builder_append(&info_builder, ", \"");
     info_builder_append_abbrev_max(&info_builder, event_name, 48);
-    info_builder_append(&info_builder, "\"");
-    
 
     
     // event args
@@ -357,25 +329,30 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
     proto_item *item3 = proto_tree_add_uint(jbl, hf_jbl_args, tvb, offset, 0, args_size);
     msgpack_object * ap = args->via.array.ptr;
     msgpack_object * const apend = args->via.array.ptr + args_size;
-    if (args_size == 0)
-    {
+    if (args_size == 0) {
         proto_item_append_text(item3, " (empty)");
-    }
-    else
-    {
+    } else {
+        info_builder_append(&info_builder, " ");
+        info_builder_append_obj(&info_builder, p_next);
         proto_tree * targs = proto_item_add_subtree(item3, ett_jbl);
-        for (; ap < apend; ++ap)
-        {
-            const char *str = get_object_str(ap);
-            int * hf_arg = next_hf_arg();
-            if (hf_arg == NULL) {
-                fprintf(stderr, "Ran out of args for: %s\n", str);
-            } else {
-                proto_tree_add_string(targs, *hf_arg, tvb, offset, 0, str);
+        for (; ap < apend; ++ap) {
+            switch (ap->type) {
+                case MSGPACK_OBJECT_NEGATIVE_INTEGER:
+                    proto_tree_add_int64(targs, hf_jbl_arg_int, tvb, offset, 0, ap->via.i64);
+                    break;
+                case MSGPACK_OBJECT_POSITIVE_INTEGER:
+                    proto_tree_add_int64(targs, hf_jbl_arg_int, tvb, offset, 0, ap->via.u64);
+                    break;
+                case MSGPACK_OBJECT_BOOLEAN:
+                    proto_tree_add_boolean(targs, hf_jbl_arg_bool, tvb, offset, 0, ap->via.boolean);
+                    break;
+                case MSGPACK_OBJECT_STR:
+                    proto_tree_add_string(targs, hf_jbl_arg_str, tvb, offset, 0, get_object_str(ap));
+                    break;
+                default:
+                    proto_tree_add_string(targs, hf_jbl_arg_other, tvb, offset, 0, get_object_str(ap));
+                    break;
             }
-            info_builder_append(&info_builder, ", \"");
-            info_builder_append_max(&info_builder, str, 48);
-            info_builder_append(&info_builder, "\"");
         }
     }
 
@@ -383,13 +360,11 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
     // Event kwargs
     p_next++;
     if (p_next >= p_end) {
-        info_builder_append(&info_builder, ")");
         return 0;
     }
     msgpack_object *kwargs = p_next;
     if (kwargs->type != MSGPACK_OBJECT_MAP) {
         error("Event kwargs should be MAP");
-        info_builder_append(&info_builder, ")");
         return 1;
     }
     
@@ -422,9 +397,7 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
             }
         }
     }
-    
-    
-    info_builder_append(&info_builder, ")");
+
     return 0;
 }
 
@@ -517,15 +490,16 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
     if (args_size == 0) {
         proto_item_append_text(item3, " (empty)");
     } else {
-        proto_tree * targs = proto_item_add_subtree(item3, ett_jbl);
+//        proto_tree * targs = proto_item_add_subtree(item3, ett_jbl);
         for (; ap < apend; ++ap) {
             const char *str = get_object_str(ap);
-            int * hf_arg = next_hf_arg();
-            if (hf_arg == NULL) {
-                fprintf(stderr, "Ran out of args for: %s\n", str);
-            } else {
-                proto_tree_add_string(targs, *hf_arg, tvb, offset, 0, str);
-            }
+            //TODO: handle event args for real
+//            int * hf_arg = next_hf_arg();
+//            if (hf_arg == NULL) {
+//                fprintf(stderr, "Ran out of args for: %s\n", str);
+//            } else {
+//                proto_tree_add_string(targs, *hf_arg, tvb, offset, 0, str);
+//            }
             info_builder_append(&info_builder, ", \"");
             info_builder_append_max(&info_builder, str, 48);
             info_builder_append(&info_builder, "\"");
@@ -1027,20 +1001,17 @@ void proto_register_jbl(void) {
         { &hf_jbl_args,
             { "Args", "jbl.args", FT_UINT32, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_arg_1,
-            { "Args #1", "jbl.arg_1", FT_STRING, BASE_NONE,
+        { &hf_jbl_arg_int,
+            { "Int", "jbl.arg_int", FT_INT64, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_arg_2,
-            { "Args #1", "jbl.arg_2", FT_STRING, BASE_NONE,
+        { &hf_jbl_arg_bool,
+            { "Bool", "jbl.arg_bool", FT_BOOLEAN, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_arg_3,
-            { "Args #2", "jbl.arg_3", FT_STRING, BASE_NONE,
+        { &hf_jbl_arg_str,
+            { "String", "jbl.arg_str", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_arg_4,
-            { "Args #3", "jbl.arg_4", FT_STRING, BASE_NONE,
-                NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_arg_5,
-            { "Args #4", "jbl.arg_5", FT_STRING, BASE_NONE,
+        { &hf_jbl_arg_other,
+            { "Other", "jbl.arg_other", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_results,
             { "Results", "jbl.results", FT_UINT32, BASE_DEC,
