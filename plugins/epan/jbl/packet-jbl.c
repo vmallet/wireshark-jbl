@@ -62,6 +62,9 @@ static int hf_jbl_res_bool = -1;
 static int hf_jbl_res_str = -1;
 static int hf_jbl_res_other = -1;
 
+static int hf_jbl_kw_results = -1;
+static int hf_jbl_kwres_other = -1; //TODO: skimping out for now until we figure out how to handle these
+
 static int hf_jbl_kwargs = -1;
 
 static gint ett_jbl = -1;
@@ -117,6 +120,27 @@ typedef struct _jbl_conv_data {
     wmem_map_t *sub_reqs; // seq_num -> event_name
     wmem_map_t *subs; // sub_id -> event_name
 } jbl_conv_data_t;
+
+
+
+#define MAX_TEMP_STR_SIZE 2048
+
+static const char * get_object_str(msgpack_object *obj) {
+    char *buf;
+    if (obj->type == MSGPACK_OBJECT_STR) {
+        int size = obj->via.str.size;
+        buf = wmem_alloc(wmem_packet_scope(), size + 1);
+        memcpy(buf, obj->via.str.ptr, size);
+        buf[size] = '\0';
+        return buf;
+    }
+    buf = wmem_alloc(wmem_packet_scope(), MAX_TEMP_STR_SIZE);
+    msgpack_object_print_buffer(buf, MAX_TEMP_STR_SIZE, *obj);
+    buf[MAX_TEMP_STR_SIZE - 1] = '\0';
+    
+    return buf;
+}
+
 
 
 static void info_builder_init(struct _info_builder *builder,  int size) {
@@ -177,7 +201,11 @@ static void info_builder_append_abbrev_max(struct _info_builder *builder, const 
     info_builder_append_max(builder, p, max);
 }
 
- 
+static void info_builder_append_obj(struct _info_builder *builder, msgpack_object *obj) {
+    const char *str = get_object_str(obj);
+    info_builder_append(builder, str);
+}
+
 
 
 #define MSGPACK_MEMPOOL_SIZE 4096
@@ -232,22 +260,6 @@ static void error(char *msg) { //TODO: do something useful
     fprintf(stderr, "%s\n", msg);
 }
 
-#define MAX_TEMP_STR_SIZE 2048
-
-static const char * get_object_str(msgpack_object *obj) {
-    char *buf;
-    if (obj->type == MSGPACK_OBJECT_STR) {
-        int size = obj->via.str.size;
-        buf = wmem_alloc(wmem_packet_scope(), size + 1);
-        memcpy(buf, obj->via.str.ptr, size);
-        buf[size] = '\0';
-        return buf;
-    }
-    buf = wmem_alloc(wmem_packet_scope(), MAX_TEMP_STR_SIZE);
-    msgpack_object_print_buffer(buf, MAX_TEMP_STR_SIZE, *obj);
-    
-    return buf;
-}
 
 static gint64 * make_durable_key_int64(gint64 key_val) {
     gint64 * key = wmem_alloc(wmem_file_scope(), sizeof(gint64));
@@ -670,6 +682,7 @@ static int decode_msg_subscribed(tvbuff_t *tvb, int offset, int len _U_, packet_
     return 0;
 }
 
+//TODO: recover called name from seq number mapping
 static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                                   proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [50, 274, {}, ["com.harman.idle"]]
@@ -704,10 +717,11 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
     // TODO: name it
     //TODO: do it;
     
-    
-    // event args
+
+    // Results
     p_next++;
     if (p_next >= p_end) {
+        //TODO: decide if we want to add field "results: 0" in case the results are missing
         return 0;
     }
     msgpack_object *res = p_next;
@@ -716,6 +730,8 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
         return 1;
     }
     
+    info_builder_append(&info_builder, " ");
+    info_builder_append_obj(&info_builder, res);
     guint res_size = (guint) res->via.u64;
     proto_item *item_res = proto_tree_add_uint(jbl, hf_jbl_results, tvb, offset, 0, res_size); //TODO
     msgpack_object * ap = res->via.array.ptr;
@@ -748,54 +764,33 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
     }
 
     
-//    // Event kwargs
-//    p_next++;
-//    if (p_next >= p_end) {
-//        info_builder_append(&info_builder, ")");
-//        return 0;
-//    }
-//    msgpack_object *kwargs = p_next;
-//    if (kwargs->type != MSGPACK_OBJECT_MAP) {
-//        error("Event kwargs should be MAP");
-//        info_builder_append(&info_builder, ")");
-//        return 1;
-//    }
-//
-//    guint kwargs_size = (guint) kwargs->via.u64;
-//    proto_item *item2 = proto_tree_add_uint(jbl, hf_jbl_kwargs, tvb, offset, 0, kwargs_size);
-//    msgpack_object_kv* kvp = kwargs->via.map.ptr;
-//    msgpack_object_kv* const kvpend = kwargs->via.map.ptr + kwargs_size;
-//    if (kwargs_size == 0)
-//    {
-//        proto_item_append_text(item2, " (empty)");
-//    } else
-//    {
-//        proto_tree * sub = proto_item_add_subtree(item2, ett_jbl);
-//        for (; kvp < kvpend; ++kvp)
-//        {
-//            const char * key = get_object_str(&kvp->key);
-//            int *hf_param = g_hash_table_lookup(jbl_params, key);
-//            if (hf_param) {
-//                //TODO: decide type based on hf_param, not wire type. For now need something that runs
-//                switch (kvp->val.type) {
-//                    case MSGPACK_OBJECT_POSITIVE_INTEGER:
-//                        proto_tree_add_uint64(sub, *hf_param, tvb, offset, 0, kvp->val.via.u64);
-//                        break;
-//                    case MSGPACK_OBJECT_NEGATIVE_INTEGER:
-//                        proto_tree_add_int64(sub, *hf_param, tvb, offset, 0, kvp->val.via.i64);
-//                        break;
-//                    default:
-//                        proto_tree_add_string(sub, *hf_param, tvb, offset, 0, get_object_str(&kvp->val));
-//                        break;
-//                }
-//            } else {
-//                fprintf(stderr, "No mapping for this guy: %s -> %s\n", key, get_object_str(&kvp->val));
-//            }
-//        }
-//    }
+    // kw_results
+    p_next++;
+    if (p_next >= p_end) {
+        //TODO: decide if we want to add field "kw_results: 0" in case the kw_results are missing
+        return 0;
+    }
+    msgpack_object *kwres = p_next;
+    if (kwres->type != MSGPACK_OBJECT_MAP) {
+        error("CallResult kw_results should be MAP");
+        return 1;
+    }
+
+    const char * kwres_txt = get_object_str(p_next);
     
-    
-    info_builder_append(&info_builder, ")");
+    info_builder_append(&info_builder, " ");
+    info_builder_append(&info_builder, kwres_txt);
+
+    //TODO: do something better when handling the kw_results
+    guint kwres_size = kwres->via.map.size;
+    proto_item *item_kwres = proto_tree_add_uint(jbl, hf_jbl_kw_results, tvb, offset, 0, kwres_size); //TODO
+    if (kwres_size == 0) {
+        proto_item_append_text(item_kwres, " (empty)");
+    } else {
+        proto_tree * tkwres = proto_item_add_subtree(item_kwres, ett_jbl);
+        proto_tree_add_string(tkwres, hf_jbl_kwres_other, tvb, offset, 0, kwres_txt);
+    }
+
     return 0;
 }
 
@@ -1061,6 +1056,12 @@ void proto_register_jbl(void) {
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_res_other,
             { "Other", "jbl.res_other", FT_STRING, BASE_NONE,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kw_results,
+            { "kwResults", "jbl.kw_results", FT_UINT32, BASE_DEC,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwres_other,
+            { "Other", "jbl.kwres_other", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_sub_id,
             { "Sub Id", "jbl.sub_id", FT_UINT32, BASE_DEC,
