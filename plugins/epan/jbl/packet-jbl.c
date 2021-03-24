@@ -40,7 +40,6 @@ static int hf_jbl_msg_data_full = -1;
 static int hf_jbl_seq_num = -1;
 static int hf_jbl_msg_event_name = -1;
 static int hf_jbl_sub_id = -1;
-static int hf_jbl_sub_name = -1;
 static int hf_jbl_event_id = -1;
 
 static int hf_jbl_kwarg_thread_id = -1;
@@ -431,7 +430,7 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
     if (!sub_name) {
         fprintf(stderr, "NOT FOUND SUB: %lld\n", sub_id);
     } else {
-        proto_tree_add_string(jbl, hf_jbl_sub_name, tvb, offset, 0, sub_name);
+        proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, sub_name);
         fprintf(stderr, "YESSSSSSSS: %lld: %s\n", sub_id, sub_name);
         info_builder_append(&info_builder, " (");
         info_builder_append_abbrev_max(&info_builder, sub_name, 48);
@@ -558,7 +557,7 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
 static int decode_msg_subscribe(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                                 proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [32, 9, {}, "com.harman.powerModeChanged"]
-    info_builder_append(&info_builder, "Event: ");
+    info_builder_append(&info_builder, "Subscribe: ");
     if ((p_end - p_next) < 3) {
         //TODO: include err in info?
         info_builder_append(&info_builder, "Not enough arguments, needed at least 3, got: ");
@@ -570,14 +569,12 @@ static int decode_msg_subscribe(tvbuff_t *tvb, int offset, int len _U_, packet_i
     // seq_num
     if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
         //TODO: include err in info?
-        error("Procotol error: event arg 2 should be an int");
+        error("Procotol error: subscribe arg 2 should be an int");
         return 1;
     }
     
     guint64 seq_num = p_next->via.u64;
     proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
-    info_builder_append(&info_builder, "Seq=");
-    info_builder_append_num(&info_builder, seq_num);
 
     // Empty map
     p_next++; // still safe
@@ -587,21 +584,17 @@ static int decode_msg_subscribe(tvbuff_t *tvb, int offset, int len _U_, packet_i
     // event name
     p_next++;
     if (p_next->type != MSGPACK_OBJECT_STR) {
-        error("Event name should be string");
+        error("Event name should be STR");
         return 1;
     }
     const char *event_name = get_object_str(p_next);
     proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
-    info_builder_append(&info_builder, ", \"");
     info_builder_append_abbrev_max(&info_builder, event_name, 48);
-    info_builder_append(&info_builder, "\"");
     
     const char *durable_name = wmem_strdup(wmem_file_scope(), event_name);
     gint64 *key = make_durable_key_int64(seq_num);
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
     wmem_map_insert(data->sub_reqs, key, (void *) durable_name);
-    
-    info_builder_append(&info_builder, ")");
     return 0;
 }
 
@@ -626,8 +619,6 @@ static int decode_msg_subscribed(tvbuff_t *tvb, int offset, int len _U_, packet_
     
     gint64 seq_num = p_next->via.u64;
     proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
-    info_builder_append(&info_builder, "Seq=");
-    info_builder_append_num(&info_builder, seq_num);
 
     // sub_id
     p_next++;
@@ -638,9 +629,7 @@ static int decode_msg_subscribed(tvbuff_t *tvb, int offset, int len _U_, packet_
     }
     
     gint64 sub_id = p_next->via.i64; //TODO: is it really an int64?
-//    proto_tree_add_uint(jbl, hf_jbl_sub_id, tvb, offset, 0, sub_id);
-    info_builder_append(&info_builder, " SubId=");
-    info_builder_append_num(&info_builder, sub_id);
+    proto_tree_add_uint64(jbl, hf_jbl_sub_id, tvb, offset, 0, sub_id);
 
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
     char * event_name = wmem_map_lookup(data->sub_reqs, &seq_num);
@@ -648,11 +637,16 @@ static int decode_msg_subscribed(tvbuff_t *tvb, int offset, int len _U_, packet_
         fprintf(stderr, "found mapping! %s\n", event_name);
         gint64 *key = make_durable_key_int64(sub_id);
         wmem_map_insert(data->subs, key, event_name);
+        info_builder_append_abbrev_max(&info_builder, event_name, 48);
+        proto_item * evt_item = proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
+        proto_item_set_generated(evt_item);
     } else {
         fprintf(stderr, "subscribe miss: seq_num = %lld\n", seq_num);
+        info_builder_append_num(&info_builder, seq_num);
     }
-    
-    info_builder_append(&info_builder, ")");
+    info_builder_append(&info_builder, " => ");
+    info_builder_append_num(&info_builder, sub_id);
+
     return 0;
 }
 
@@ -1035,10 +1029,7 @@ void proto_register_jbl(void) {
             { "Other", "jbl.kwres_other", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_sub_id,
-            { "Sub Id", "jbl.sub_id", FT_UINT32, BASE_DEC,
-                NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_sub_name,
-            { "Sub Name", "jbl.sub_name", FT_STRING, BASE_NONE,
+            { "Sub Id", "jbl.sub_id", FT_UINT64, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_event_id,
             { "Event Id", "jbl.event_id", FT_UINT64, BASE_DEC,
