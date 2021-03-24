@@ -1,0 +1,10 @@
+This product bundles files from msgpack-c.
+They are distributed under the Boost Software License, Version 1.0.
+(See accompanying file plugins/epan/jbl/msgpack/LICENSE_1_0.txt or copy at
+http://www.boost.org/LICENSE_1_0.txt)
+
+For details, see the following files:
+
+plugins/epan/jbl/msgpack.h
+plugins/epan/jbl/msgpack/README.md
+plugins/epan/jbl/msgpack/*
