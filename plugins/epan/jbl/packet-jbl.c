@@ -35,14 +35,14 @@ static int proto_jbl = -1;
 
 static int hf_jbl_handshake = -1;
 
-static int hf_jbl_msg_type = -1;
-static int hf_jbl_pdu_len = -1;
+static int hf_jbl_type = -1;
+static int hf_jbl_len = -1;
 static int hf_jbl_msg_data_short = -1;
 static int hf_jbl_msg_data_full = -1;
 static int hf_jbl_seq_num = -1;
-static int hf_jbl_msg_event_name = -1;
-static int hf_jbl_sub_id = -1;
+static int hf_jbl_event_name = -1;
 static int hf_jbl_event_id = -1;
+static int hf_jbl_sub_id = -1;
 static int hf_jbl_rpc_name = -1;
 static int hf_jbl_rpc_id = -1;
 
@@ -101,7 +101,7 @@ static GHashTable *jbl_params = NULL;
 #define JBL_MSG_INVOKE_YIELD   70
 
 
-static const value_string req_names[] = {
+static const value_string type_names[] = {
     { JBL_MSG_HELLO          , "Hello" },
     { JBL_MSG_WELCOME        , "Welcome" },
     { JBL_MSG_ABORT          , "Abort" },
@@ -461,7 +461,7 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
         return 1;
     }
     const char *event_name = get_object_str(p_next);
-    proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
+    proto_tree_add_string(jbl, hf_jbl_event_name, tvb, offset, 0, event_name);
     info_builder_append_abbrev_max(&info_builder, event_name, 48);
 
     
@@ -516,7 +516,7 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
         info_builder_append(&info_builder, "SubId=");
         info_builder_append_num(&info_builder, sub_id);
     } else {
-        proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
+        proto_tree_add_string(jbl, hf_jbl_event_name, tvb, offset, 0, event_name);
         fprintf(stderr, "YESSSSSSSS: %lld: %s\n", sub_id, event_name);
         info_builder_append_abbrev_max(&info_builder, event_name, 48);
     }
@@ -596,7 +596,7 @@ static int decode_msg_subscribe(tvbuff_t *tvb, int offset, int len _U_, packet_i
         return 1;
     }
     const char *event_name = get_object_str(p_next);
-    proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
+    proto_tree_add_string(jbl, hf_jbl_event_name, tvb, offset, 0, event_name);
     info_builder_append_abbrev_max(&info_builder, event_name, 48);
     
     const char *durable_name = wmem_strdup(wmem_file_scope(), event_name);
@@ -645,7 +645,7 @@ static int decode_msg_subscribed(tvbuff_t *tvb, int offset, int len _U_, packet_
         gint64 *key = make_durable_key_int64(sub_id);
         wmem_map_insert(data->subs, key, event_name);
         info_builder_append_abbrev_max(&info_builder, event_name, 48);
-        proto_item * evt_item = proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
+        proto_item * evt_item = proto_tree_add_string(jbl, hf_jbl_event_name, tvb, offset, 0, event_name);
         proto_item_set_generated(evt_item);
     } else {
         fprintf(stderr, "subscribe miss: seq_num = %lld\n", seq_num);
@@ -1022,15 +1022,16 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
     msgpack_object* const p_end = object->via.array.ptr + array_len;
 
     if (p->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
-        fprintf(stderr, "WRONG req type: %d (expected positive int, %d)\n", p->type, MSGPACK_OBJECT_POSITIVE_INTEGER);
+        fprintf(stderr, "WRONG type: %d (expected positive int, %d)\n", p->type, MSGPACK_OBJECT_POSITIVE_INTEGER);
         return 1;
     }
 
     guint type = (guint) p->via.i64;
-    proto_tree_add_uint(jbl, hf_jbl_msg_type, tvb, offset, 0, type);
+    proto_tree_add_uint(jbl, hf_jbl_type, tvb, offset, 0, type);
 
-    info_builder_append(&info_builder, val_to_str(type, req_names, "Unknown"));
-    info_builder_append(&info_builder, ": ");
+    info_builder_append(&info_builder, " ");
+    info_builder_append(&info_builder, val_to_str(type, type_names, "Unknown"));
+    info_builder_append(&info_builder, "  ");
 
     int ret = 0;
     p++;
@@ -1085,7 +1086,7 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
     proto_tree * sub = proto_item_add_subtree(x, ett_jbl);
     proto_tree_add_string(sub, hf_jbl_msg_data_full, tvb, offset, len, str);
 
-    proto_item_append_text(jbl, ", Req: %s (%d)", val_to_str(type, req_names, "Unknown (0x%02x)"), type);
+    proto_item_append_text(jbl, ", Type: %s (%d)", val_to_str(type, type_names, "Unknown (0x%02x)"), type);
 
     return ret;
 }
@@ -1185,9 +1186,9 @@ static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
     proto_item_append_text(ti, ", Len: %u", work_len);
     if (len != work_len) {
         proto_item_append_text(ti, " (inferred)");
-        proto_tree_add_uint(jbl_tree, hf_jbl_pdu_len, tvb, 0, 0, work_len);
+        proto_tree_add_uint(jbl_tree, hf_jbl_len, tvb, 0, 0, work_len);
     } else {
-        proto_tree_add_item(jbl_tree, hf_jbl_pdu_len, tvb, 0, 4, ENC_BIG_ENDIAN);
+        proto_tree_add_item(jbl_tree, hf_jbl_len, tvb, 0, 4, ENC_BIG_ENDIAN);
     }
 
     void *bytes = tvb_memdup(wmem_packet_scope(), tvb, offset, work_len);
@@ -1206,10 +1207,10 @@ void proto_register_jbl(void) {
         { &hf_jbl_handshake,
             { "Handshake", "jbl.handshake", FT_UINT32, BASE_HEX,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_msg_type,
+        { &hf_jbl_type,
             { "Type", "jbl.type", FT_UINT8, BASE_DEC,
-                VALS (req_names), 0x0, NULL, HFILL }},
-        { &hf_jbl_pdu_len,
+                VALS (type_names), 0x0, NULL, HFILL }},
+        { &hf_jbl_len,
             { "Length", "jbl.len", FT_UINT32, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_msg_data_short,
@@ -1221,7 +1222,7 @@ void proto_register_jbl(void) {
         { &hf_jbl_seq_num,
             { "Sequence", "jbl.seq_num", FT_UINT64, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_msg_event_name,
+        { &hf_jbl_event_name,
             { "Event Name", "jbl.event_name", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_kwargs,
