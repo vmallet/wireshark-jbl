@@ -824,14 +824,14 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
 
     if ((p_end - p_next) < 2) {
         //TODO: include err in info?
-        error("Protocol error: call result needs 2 args at least");
+        error("Protocol error: Call Result needs 2 args at least");
         return 1;
     }
     
     // Seq number
     if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
         //TODO: include err in info?
-        error("Procotol error: publish arg 2 should be an int");
+        error("Procotol error: Call Result arg 2 should be an int");
         return 1;
     }
     
@@ -946,6 +946,61 @@ static int decode_msg_invoke(tvbuff_t *tvb, int offset, int len _U_, packet_info
     return 0;
 }
 
+//TODO: recover invoked name from seq number mapping
+static int decode_msg_yield(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
+                            proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
+    // [70, 2143, {}]
+    // [70, 2127, {}, [true]]
+    // [70, 2135, {}, [true, "music"], {"music"=>{"hotel_max_vol"=>32, "mute"=>1, "volume"=>11}}]
+    // [70, 2149, {}, ["com.harman.idle"]]
+
+    if ((p_end - p_next) < 2) {
+        //TODO: include err in info?
+        error("Protocol error: Yield needs 2 args at least");
+        return 1;
+    }
+
+    // Seq number
+    if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+        //TODO: include err in info?
+        error("Procotol error: Yield arg 2 should be an int");
+        return 1;
+    }
+
+    guint64 num = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, num);
+    info_builder_append(&info_builder, "Seq=");
+    info_builder_append_num(&info_builder, num);
+
+
+    // Empty map
+    p_next++; // still safe
+    // TODO: name it
+    //TODO: do it;
+
+
+    // Yield Args
+    p_next++;
+    if (p_next >= p_end) {
+        return 0;
+    }
+    if (process_args(jbl, offset, p_next, tvb)) {
+        return 1;
+    }
+
+
+    // Yield kwargs
+    p_next++;
+    if (p_next >= p_end) {
+        return 0;
+    }
+    if (process_kwargs(jbl, offset, p_next, tvb)) {
+        return 1;
+    }
+
+    return 0;
+}
+
 static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo _U_,
                       proto_tree *tree _U_, void *data _U_, proto_tree *jbl _U_, msgpack_object *object, char *str) {
     if (object->type != MSGPACK_OBJECT_ARRAY) {
@@ -1002,6 +1057,9 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
             break;
         case JBL_MSG_INVOKE_RPC:
             decode_msg_invoke(tvb, offset, len, pinfo, jbl, p, p_end);
+            break;
+        case JBL_MSG_INVOKE_YIELD:
+            decode_msg_yield(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
         default:
             ret = 1;
