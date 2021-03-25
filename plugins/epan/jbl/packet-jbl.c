@@ -50,6 +50,14 @@ static int hf_jbl_kwarg_val = -1;
 static int hf_jbl_kwarg_thread_id = -1;
 static int hf_jbl_kwarg_state = -1;
 static int hf_jbl_kwarg_service = -1;
+static int hf_jbl_kwarg_dis_mode = -1;
+static int hf_jbl_kwarg_dis_time = -1;
+static int hf_jbl_kwarg_dis_mand = -1;
+static int hf_jbl_kwarg_action = -1;
+static int hf_jbl_kwarg_player = -1;
+static int hf_jbl_kwarg_nextsrc = -1;
+static int hf_jbl_kwarg_level = -1;
+static int hf_jbl_kwarg_timeout = -1;
 
 //static int hf_jbl_param_xxx = -1;
 
@@ -253,7 +261,16 @@ static void init_param_table() {
     g_hash_table_insert(jbl_params, "thread_id", &hf_jbl_kwarg_thread_id);
     g_hash_table_insert(jbl_params, "service", &hf_jbl_kwarg_service);
     g_hash_table_insert(jbl_params, "state", &hf_jbl_kwarg_state);
+    g_hash_table_insert(jbl_params, "dis_mode", &hf_jbl_kwarg_dis_mode);
+    g_hash_table_insert(jbl_params, "dis_time", &hf_jbl_kwarg_dis_time);
+    g_hash_table_insert(jbl_params, "dis_mand", &hf_jbl_kwarg_dis_mand);
+    g_hash_table_insert(jbl_params, "action", &hf_jbl_kwarg_action);
+    g_hash_table_insert(jbl_params, "player", &hf_jbl_kwarg_player);
+    g_hash_table_insert(jbl_params, "nextsrc", &hf_jbl_kwarg_nextsrc);
+    g_hash_table_insert(jbl_params, "level", &hf_jbl_kwarg_level);
+    g_hash_table_insert(jbl_params, "timeout", &hf_jbl_kwarg_timeout);
 }
+
 
 #define INFO_BUILDER_SIZE 512
 
@@ -1197,6 +1214,30 @@ void proto_register_jbl(void) {
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_kwarg_state,
             { "State", "jbl.kwarg_state", FT_STRING, BASE_NONE,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_dis_mode,
+            { "Dis_mode", "jbl.kwarg_dis_mode", FT_UINT64, BASE_DEC,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_dis_time,
+            { "Dis_time", "jbl.kwarg_dis_time", FT_UINT64, BASE_DEC,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_dis_mand,
+            { "Dis_mand", "jbl.kwarg_dis_mand", FT_UINT64, BASE_DEC,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_action,
+            { "Action", "jbl.kwarg_action", FT_STRING, BASE_NONE,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_level,
+            { "Level", "jbl.kwarg_level", FT_UINT64, BASE_DEC,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_timeout,
+            { "Timeout", "jbl.kwarg_timeout", FT_UINT64, BASE_DEC,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_player,
+            { "Player", "jbl.kwarg_player", FT_STRING, BASE_NONE,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_nextsrc,
+            { "Nextsrc", "jbl.kwarg_nextsrc", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_args,
             { "Args", "jbl.args", FT_UINT32, BASE_DEC,
