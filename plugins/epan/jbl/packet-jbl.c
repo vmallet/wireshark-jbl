@@ -27,6 +27,8 @@
 #include <epan/packet.h>
 #include <epan/conversation.h>
 
+#include <epan/dissectors/packet-tcp.h>
+
 #include "msgpack.h"
 
 #define JBL_PORT 9999
@@ -37,6 +39,7 @@ static int hf_jbl_handshake = -1;
 
 static int hf_jbl_type = -1;
 static int hf_jbl_len = -1;
+static int hf_jbl_multi_pdu = -1;
 static int hf_jbl_msg_data_short = -1;
 static int hf_jbl_msg_data_full = -1;
 static int hf_jbl_seq_num = -1;
@@ -73,6 +76,9 @@ static gint ett_jbl = -1;
 static GHashTable *jbl_params = NULL;
 
 #define JBL_HANDSHAKE_MAGIC  0x7FF20000
+
+/* Minimum PDU length: handshake (4 bytes) or PDU length (4 bytes)*/
+#define JBL_MINIMUM_PDU_LENGTH 4
 
 #define JBL_MSG_HELLO           1
 #define JBL_MSG_WELCOME         2
@@ -1130,20 +1136,39 @@ static int decode_msgpack(tvbuff_t *tvb _U_, int offset, int len, packet_info *p
     return 0;
 }
 
+static guint32 get_jbl_pdu_len(packet_info *pinfo _U_, tvbuff_t *tvb, int offset, void *data _U_) {
+    guint32 len = tvb_get_guint32(tvb, offset, ENC_BIG_ENDIAN);
+
+    if (len == JBL_HANDSHAKE_MAGIC) {
+        return JBL_MINIMUM_PDU_LENGTH;
+    }
+    return len + JBL_MINIMUM_PDU_LENGTH;
+}
+
 #define BUFF_SIZE 2048
 
-static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_) {
+static int dissect_jbl_pdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data) {
     gint offset = 0;
+
+    bool is_multi = FALSE;
+
+    // Note: for now, data is a pointer to a "first" bool: TRUE for first PDU
+    // in segment, FALSE for following PDUs.
+    if (*(bool *) data) {
+        *(bool *) data = FALSE;
+    } else {
+        is_multi = TRUE;
+    }
     
     reset_state();
-    
+
     col_set_str(pinfo->cinfo, COL_PROTOCOL, "JBL");
     /* Clear the info column */
-    col_clear(pinfo->cinfo,COL_INFO);
+    col_clear(pinfo->cinfo, COL_INFO);
     
     guint data_len = tvb_captured_length(tvb);
 
-    if (data_len < 4) {
+    if (data_len < JBL_MINIMUM_PDU_LENGTH) {
         fprintf(stderr, "Data len too short: %u\n", data_len);
         return -1;
     }
@@ -1153,6 +1178,13 @@ static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
     proto_tree *jbl_tree = proto_item_add_subtree(ti, ett_jbl);
 
     append_port_info_to_builder(&info_builder, pinfo);
+
+    if (is_multi) {
+        info_builder_append(&info_builder, " ** MULTI PDUs ** ");
+        // TODO: ideally we'd add this one a bit further down in the tree
+        proto_item * multi_item = proto_tree_add_boolean(jbl_tree, hf_jbl_multi_pdu, tvb, offset, 0, TRUE);
+        proto_item_set_generated(multi_item);
+    }
 
     guint work_len = 0;
     
@@ -1198,6 +1230,14 @@ static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
     return tvb_captured_length(tvb);
 }
 
+static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_) {
+    bool first = TRUE;
+    //TODO: take care of TODOs below (i.e. add jbl_desegment config parameter)
+    tcp_dissect_pdus(tvb, pinfo, tree, TRUE /* TODO */, JBL_MINIMUM_PDU_LENGTH,
+                     get_jbl_pdu_len, dissect_jbl_pdu, &first);
+    return tvb_captured_length(tvb);
+}
+
 void proto_register_jbl(void) {
     fprintf(stderr, "REGISTERING JBL!!!! ************************ \n");
     
@@ -1212,6 +1252,9 @@ void proto_register_jbl(void) {
                 VALS (type_names), 0x0, NULL, HFILL }},
         { &hf_jbl_len,
             { "Length", "jbl.len", FT_UINT32, BASE_DEC,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_multi_pdu,
+            { "Multi PDU", "jbl.multi_pdu", FT_BOOLEAN, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_msg_data_short,
             { "Raw message", "jbl.raw_msg_short", FT_STRING, BASE_NONE,
