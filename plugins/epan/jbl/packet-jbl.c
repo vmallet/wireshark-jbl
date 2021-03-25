@@ -59,23 +59,11 @@ static int hf_jbl_kwarg_nextsrc = -1;
 static int hf_jbl_kwarg_level = -1;
 static int hf_jbl_kwarg_timeout = -1;
 
-//static int hf_jbl_param_xxx = -1;
-
 static int hf_jbl_args = -1;
 static int hf_jbl_arg_int = -1;
 static int hf_jbl_arg_bool = -1;
 static int hf_jbl_arg_str = -1;
 static int hf_jbl_arg_other = -1;
-
-static int hf_jbl_results = -1;
-static int hf_jbl_res_int = -1;
-static int hf_jbl_res_bool = -1;
-static int hf_jbl_res_str = -1;
-static int hf_jbl_res_other = -1;
-
-static int hf_jbl_kw_results = -1;
-static int hf_jbl_kwres_other = -1; //TODO: skimping out for now until we figure out how to handle these
-
 
 static gint ett_jbl = -1;
 
@@ -859,77 +847,23 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
     //TODO: do it;
     
 
-    // Results
+    // Call Result Args
     p_next++;
     if (p_next >= p_end) {
-        //TODO: decide if we want to add field "results: 0" in case the results are missing
         return 0;
     }
-    msgpack_object *res = p_next;
-    if (res->type != MSGPACK_OBJECT_ARRAY) {
-        error("Call results should be ARRAY");
-        return 1;
-    }
-    
-    info_builder_append(&info_builder, " ");
-    info_builder_append_obj(&info_builder, res);
-    guint res_size = (guint) res->via.u64;
-    proto_item *item_res = proto_tree_add_uint(jbl, hf_jbl_results, tvb, offset, 0, res_size); //TODO
-    msgpack_object * ap = res->via.array.ptr;
-    msgpack_object * const apend = res->via.array.ptr + res_size;
-    if (res_size == 0) {
-        proto_item_append_text(item_res, " (empty)");
-    } else {
-        proto_tree * tres = proto_item_add_subtree(item_res, ett_jbl);
-        char rbuf[1024]; // TODO: really?
-        for (; ap < apend; ++ap) {
-            switch (ap->type) {
-                case MSGPACK_OBJECT_NEGATIVE_INTEGER:
-                    proto_tree_add_int64(tres, hf_jbl_res_int, tvb, offset, 0, ap->via.i64);
-                    break;
-                case MSGPACK_OBJECT_POSITIVE_INTEGER:
-                    proto_tree_add_int64(tres, hf_jbl_res_int, tvb, offset, 0, ap->via.u64);
-                    break;
-                case MSGPACK_OBJECT_BOOLEAN:
-                    proto_tree_add_boolean(tres, hf_jbl_res_bool, tvb, offset, 0, ap->via.boolean);
-                    break;
-                case MSGPACK_OBJECT_STR:
-                    proto_tree_add_string(tres, hf_jbl_res_str, tvb, offset, 0, get_object_str(ap));
-                    break;
-                default:
-                    msgpack_object_print_buffer(rbuf, sizeof(rbuf) - 1, *ap);
-                    proto_tree_add_string(tres, hf_jbl_res_other, tvb, offset, 0, rbuf);
-                    break;
-            }
-        }
-    }
-
-    
-    // kw_results
-    p_next++;
-    if (p_next >= p_end) {
-        //TODO: decide if we want to add field "kw_results: 0" in case the kw_results are missing
-        return 0;
-    }
-    msgpack_object *kwres = p_next;
-    if (kwres->type != MSGPACK_OBJECT_MAP) {
-        error("CallResult kw_results should be MAP");
+    if (process_args(jbl, offset, p_next, tvb)) {
         return 1;
     }
 
-    const char * kwres_txt = get_object_str(p_next);
     
-    info_builder_append(&info_builder, " ");
-    info_builder_append(&info_builder, kwres_txt);
-
-    //TODO: do something better when handling the kw_results
-    guint kwres_size = kwres->via.map.size;
-    proto_item *item_kwres = proto_tree_add_uint(jbl, hf_jbl_kw_results, tvb, offset, 0, kwres_size); //TODO
-    if (kwres_size == 0) {
-        proto_item_append_text(item_kwres, " (empty)");
-    } else {
-        proto_tree * tkwres = proto_item_add_subtree(item_kwres, ett_jbl);
-        proto_tree_add_string(tkwres, hf_jbl_kwres_other, tvb, offset, 0, kwres_txt);
+    // Call Result kwargs
+    p_next++;
+    if (p_next >= p_end) {
+        return 0;
+    }
+    if (process_kwargs(jbl, offset, p_next, tvb)) {
+        return 1;
     }
 
     return 0;
@@ -1271,27 +1205,6 @@ void proto_register_jbl(void) {
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_arg_other,
             { "Other", "jbl.arg_other", FT_STRING, BASE_NONE,
-                NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_results,
-            { "Results", "jbl.results", FT_UINT32, BASE_DEC,
-                NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_res_int,
-            { "Int", "jbl.res_int", FT_INT64, BASE_DEC,
-                NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_res_bool,
-            { "Bool", "jbl.res_bool", FT_BOOLEAN, BASE_NONE,
-                NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_res_str,
-            { "String", "jbl.res_str", FT_STRING, BASE_NONE,
-                NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_res_other,
-            { "Other", "jbl.res_other", FT_STRING, BASE_NONE,
-                NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_kw_results,
-            { "kwResults", "jbl.kw_results", FT_UINT32, BASE_DEC,
-                NULL, 0x0, NULL, HFILL }},
-        { &hf_jbl_kwres_other,
-            { "Other", "jbl.kwres_other", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_sub_id,
             { "Sub Id", "jbl.sub_id", FT_UINT64, BASE_DEC,
