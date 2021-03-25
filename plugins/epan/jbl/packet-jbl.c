@@ -33,7 +33,7 @@
 
 static int proto_jbl = -1;
 
-static int hf_jbl_pdu_type = -1;
+static int hf_jbl_msg_type = -1;
 static int hf_jbl_pdu_len = -1;
 static int hf_jbl_msg_data_short = -1;
 static int hf_jbl_msg_data_full = -1;
@@ -889,30 +889,24 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
         fprintf(stderr, "WRONG TYPE: %d (expected array, %d)\n", object->type, MSGPACK_OBJECT_ARRAY);
         return 1;
     }
-    
+
     int array_len = object->via.array.size;
     if (array_len < 3) {
         fprintf(stderr, "Wrong array length: expected at least 3, got: %d\n", array_len);
         return 1;
     }
-    
+
     msgpack_object* p = object->via.array.ptr;
     msgpack_object* const p_end = object->via.array.ptr + array_len;
-    
+
     if (p->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
         fprintf(stderr, "WRONG req type: %d (expected positive int, %d)\n", p->type, MSGPACK_OBJECT_POSITIVE_INTEGER);
         return 1;
     }
-    
-    guint type = (guint) p->via.i64; //TODO: is it really an int64?
-    proto_tree_add_uint(jbl, hf_jbl_pdu_type, tvb, offset, 0, type);
 
-    
-    if (len == 70 && type == 16) {
-        printf("check\n");
-    }
+    guint type = (guint) p->via.i64;
+    proto_tree_add_uint(jbl, hf_jbl_msg_type, tvb, offset, 0, type);
 
-    
     p++;
     switch (type) {
         case JBL_MSG_PUBLISH:
@@ -937,10 +931,7 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
             decode_msg_registered(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
     }
-    
-    
-    
-    
+
     const char *dot = "...";
     char save[4];
     bool yes = FALSE;
@@ -956,10 +947,8 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
     proto_tree * sub = proto_item_add_subtree(x, ett_jbl);
     proto_tree_add_string(sub, hf_jbl_msg_data_full, tvb, offset, len, str);
 
-        
-    
     proto_item_append_text(jbl, ", Req: %s (%d)", val_to_str(type, req_names, "Unknown (0x%02x)"), type);
-    
+
     return 0;
 }
 
@@ -978,21 +967,15 @@ static void append_port_info_to_builder(struct _info_builder *builder, packet_in
     info_builder_append(builder, " ");
 }
 
-
 static int decode_msgpack(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo,
                           proto_tree *tree _U_, void *data _U_, proto_tree *jbl _U_, void *bytes, int size) {
     msgpack_zone mempool;
     msgpack_object deserialized;
     char str[STR_SIZE];
-    
-    /* deserialize the buffer into msgpack_object instance. */
-    /* deserialized object is valid during the msgpack_zone instance alive. */
+
     msgpack_zone_init(&mempool, MSGPACK_MEMPOOL_SIZE);
     msgpack_unpack(bytes, size, NULL, &mempool, &deserialized);
     
-    msgpack_object_print(stdout, deserialized);
-    puts("");
-
     msgpack_object_print_buffer(str, STR_SIZE, deserialized);
     str[STR_SIZE - 1] = '\0';
     
@@ -1023,13 +1006,7 @@ static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
     col_clear(pinfo->cinfo,COL_INFO);
     
     guint data_len = tvb_captured_length(tvb);
-    
-    
-    
-    
-//    printf("\n");
-//    printf("captured: %d   reported: %d\n",  tvb_captured_length(tvb), tvb_reported_length(tvb));
- 
+
     if (data_len < 4) {
         fprintf(stderr, "Data len too short: %u\n", data_len);
         return -1;
@@ -1043,7 +1020,7 @@ static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
     
     guint32 len = tvb_get_guint32(tvb, offset, ENC_BIG_ENDIAN);
     guint32 expected_len = data_len - 4;
-    
+
     if (len > expected_len) {
         fprintf(stderr, "ah, a case where len is wrong: %x (%d)  vs  %d\n", len, len, data_len);
         work_len = data_len;
@@ -1065,20 +1042,11 @@ static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
     } else {
         proto_tree_add_item(jbl_tree, hf_jbl_pdu_len, tvb, 0, 4, ENC_BIG_ENDIAN);
     }
-    
-    
+
     void *bytes = tvb_memdup(wmem_packet_scope(), tvb, offset, work_len);
-//    pro(bytes, work_len, str, STR_SIZE);
 
     decode_msgpack(tvb, offset, work_len, pinfo, tree, data, ti, bytes, work_len);
-    
-//    proto_tree_add_item(jbl_tree, hf_jbl_pdu_type, tvb, offset, 1, ENC_BIG_ENDIAN);
-//    offset += 1;
 
-    
-
-    
-    
     return tvb_captured_length(tvb);
 }
 
@@ -1088,7 +1056,7 @@ void proto_register_jbl(void) {
     init_param_table();
     
     static hf_register_info hf[] = {
-        { &hf_jbl_pdu_type,
+        { &hf_jbl_msg_type,
             { "Type", "jbl.type", FT_UINT8, BASE_DEC,
                 VALS (req_names), 0x0, NULL, HFILL }},
         { &hf_jbl_pdu_len,
