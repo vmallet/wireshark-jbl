@@ -724,6 +724,71 @@ static int decode_msg_registered(tvbuff_t *tvb, int offset, int len _U_, packet_
     return 0;
 }
 
+static int decode_msg_call(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
+                             proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
+
+    // [48, 186888, {}, "com.harman.lcdMode", [1]]
+    // [48, 75, {}, "com.harman.source.get-active", []]
+    // [48, 671, {}, "com.harman.aui.playerPreAction", ["com.harman.HDMI"], {"action"=>"playing"}]
+
+    if ((p_end - p_next) < 3) {
+        //TODO: include err in info?
+        error("Protocol error: Invoke needs 2 args at least");
+        return 1;
+    }
+
+
+    // Seq number
+    if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+        //TODO: include err in info?
+        error("Procotol error: Invoke arg 2 should be an int");
+        return 1;
+    }
+
+    guint64 seq_num = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
+
+
+    // Empty map
+    p_next++; // still safe
+    // TODO: name it
+    //TODO: do it;
+
+
+    // RPC name
+    p_next++;
+    if (p_next->type != MSGPACK_OBJECT_STR) {
+        error("RPC name should be STR");
+        return 1;
+    }
+    const char *rpc_name = get_object_str(p_next);
+    proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
+    info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
+
+
+    // Call args
+    p_next++;
+    if (p_next >= p_end) {
+        return 0;
+    }
+    if (process_args(jbl, offset, p_next, tvb)) {
+        return 1;
+    }
+
+
+    // Call kwargs
+    p_next++;
+    if (p_next >= p_end) {
+        return 0;
+    }
+    if (process_kwargs(jbl, offset, p_next, tvb)) {
+        return 1;
+    }
+
+    return 0;
+}
+
+
 //TODO: recover called name from seq number mapping
 static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                                   proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
@@ -953,6 +1018,9 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
             break;
         case JBL_MSG_EVENT:
             decode_msg_event(tvb, offset, len, pinfo, jbl, p, p_end);
+            break;
+        case JBL_MSG_CALL:
+            decode_msg_call(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
         case JBL_MSG_CALL_RESULT:
             decode_msg_call_result(tvb, offset, len, pinfo, jbl, p, p_end);
