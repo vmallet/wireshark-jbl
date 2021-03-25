@@ -44,6 +44,9 @@ static int hf_jbl_event_id = -1;
 static int hf_jbl_rpc_name = -1;
 static int hf_jbl_rpc_id = -1;
 
+static int hf_jbl_kwargs = -1;
+static int hf_jbl_kwarg_key = -1;
+static int hf_jbl_kwarg_val = -1;
 static int hf_jbl_kwarg_thread_id = -1;
 static int hf_jbl_kwarg_state = -1;
 static int hf_jbl_kwarg_service = -1;
@@ -65,7 +68,6 @@ static int hf_jbl_res_other = -1;
 static int hf_jbl_kw_results = -1;
 static int hf_jbl_kwres_other = -1; //TODO: skimping out for now until we figure out how to handle these
 
-static int hf_jbl_kwargs = -1;
 
 static gint ett_jbl = -1;
 
@@ -354,6 +356,49 @@ static int process_args(proto_tree *jbl, int offset, msgpack_object *p_next, tvb
     return 0;
 }
 
+static int process_kwargs(proto_tree *jbl, int offset, msgpack_object *p_next, tvbuff_t *tvb) {
+    msgpack_object *kwargs = p_next;
+    if (kwargs->type != MSGPACK_OBJECT_MAP) {
+        error("kwargs should be MAP");
+        return 1;
+    }
+
+    guint kwargs_size = (guint) kwargs->via.u64;
+    proto_item *item2 = proto_tree_add_uint(jbl, hf_jbl_kwargs, tvb, offset, 0, kwargs_size);
+    msgpack_object_kv* kvp = kwargs->via.map.ptr;
+    msgpack_object_kv* const kvpend = kwargs->via.map.ptr + kwargs_size;
+    if (kwargs_size == 0) {
+        proto_item_append_text(item2, " (empty)");
+    } else {
+        proto_tree * sub = proto_item_add_subtree(item2, ett_jbl);
+        for (; kvp < kvpend; ++kvp) {
+            const char * key = get_object_str(&kvp->key);
+            int *hf_param = g_hash_table_lookup(jbl_params, key);
+            if (hf_param) {
+                //TODO: decide type based on hf_param, not wire type. For now need something that runs
+                switch (kvp->val.type) {
+                    case MSGPACK_OBJECT_POSITIVE_INTEGER:
+                        proto_tree_add_uint64(sub, *hf_param, tvb, offset, 0, kvp->val.via.u64);
+                        break;
+                    case MSGPACK_OBJECT_NEGATIVE_INTEGER:
+                        proto_tree_add_int64(sub, *hf_param, tvb, offset, 0, kvp->val.via.i64);
+                        break;
+                    default:
+                        proto_tree_add_string(sub, *hf_param, tvb, offset, 0, get_object_str(&kvp->val));
+                        break;
+                }
+            } else {
+                proto_item * key_it = proto_tree_add_string(sub, hf_jbl_kwarg_key, tvb, offset, 0, get_object_str(&kvp->key));
+                proto_tree * key_sub = proto_item_add_subtree(key_it, ett_jbl);
+                proto_tree_add_string(key_sub, hf_jbl_kwarg_val, tvb, offset, 0, get_object_str(&kvp->val));
+            }
+        }
+        info_builder_append(&info_builder, " ");
+        info_builder_append_max(&info_builder, get_object_str(kwargs), 128);
+    }
+    return 0;
+}
+
 static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                               proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     
@@ -408,40 +453,8 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
     if (p_next >= p_end) {
         return 0;
     }
-    msgpack_object *kwargs = p_next;
-    if (kwargs->type != MSGPACK_OBJECT_MAP) {
-        error("Event kwargs should be MAP");
+    if (process_kwargs(jbl, offset, p_next, tvb)) {
         return 1;
-    }
-    
-    guint kwargs_size = (guint) kwargs->via.u64;
-    proto_item *item2 = proto_tree_add_uint(jbl, hf_jbl_kwargs, tvb, offset, 0, kwargs_size);
-    msgpack_object_kv* kvp = kwargs->via.map.ptr;
-    msgpack_object_kv* const kvpend = kwargs->via.map.ptr + kwargs_size;
-    if (kwargs_size == 0) {
-        proto_item_append_text(item2, " (empty)");
-    } else {
-        proto_tree * sub = proto_item_add_subtree(item2, ett_jbl);
-        for (; kvp < kvpend; ++kvp) {
-            const char * key = get_object_str(&kvp->key);
-            int *hf_param = g_hash_table_lookup(jbl_params, key);
-            if (hf_param) {
-                //TODO: decide type based on hf_param, not wire type. For now need something that runs
-                switch (kvp->val.type) {
-                    case MSGPACK_OBJECT_POSITIVE_INTEGER:
-                        proto_tree_add_uint64(sub, *hf_param, tvb, offset, 0, kvp->val.via.u64);
-                        break;
-                    case MSGPACK_OBJECT_NEGATIVE_INTEGER:
-                        proto_tree_add_int64(sub, *hf_param, tvb, offset, 0, kvp->val.via.i64);
-                        break;
-                    default:
-                        proto_tree_add_string(sub, *hf_param, tvb, offset, 0, get_object_str(&kvp->val));
-                        break;
-                }
-            } else {
-                fprintf(stderr, "No mapping for this guy: %s -> %s\n", key, get_object_str(&kvp->val));
-            }
-        }
     }
 
     return 0;
@@ -514,48 +527,12 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
     // Event kwargs
     p_next++;
     if (p_next >= p_end) {
-        info_builder_append(&info_builder, ")");
         return 0;
     }
-    msgpack_object *kwargs = p_next;
-    if (kwargs->type != MSGPACK_OBJECT_MAP) {
-        error("Event kwargs should be MAP");
-        info_builder_append(&info_builder, ")");
+    if (process_kwargs(jbl, offset, p_next, tvb)) {
         return 1;
     }
-    
-    guint kwargs_size = (guint) kwargs->via.u64;
-    proto_item *item2 = proto_tree_add_uint(jbl, hf_jbl_kwargs, tvb, offset, 0, kwargs_size);
-    msgpack_object_kv* kvp = kwargs->via.map.ptr;
-    msgpack_object_kv* const kvpend = kwargs->via.map.ptr + kwargs_size;
-    if (kwargs_size == 0) {
-        proto_item_append_text(item2, " (empty)");
-    } else {
-        proto_tree * sub = proto_item_add_subtree(item2, ett_jbl);
-        for (; kvp < kvpend; ++kvp) {
-            const char * key = get_object_str(&kvp->key);
-            int *hf_param = g_hash_table_lookup(jbl_params, key);
-            if (hf_param) {
-                //TODO: decide type based on hf_param, not wire type. For now need something that runs
-                switch (kvp->val.type) {
-                    case MSGPACK_OBJECT_POSITIVE_INTEGER:
-                        proto_tree_add_uint64(sub, *hf_param, tvb, offset, 0, kvp->val.via.u64);
-                        break;
-                    case MSGPACK_OBJECT_NEGATIVE_INTEGER:
-                        proto_tree_add_int64(sub, *hf_param, tvb, offset, 0, kvp->val.via.i64);
-                        break;
-                    default:
-                        proto_tree_add_string(sub, *hf_param, tvb, offset, 0, get_object_str(&kvp->val));
-                        break;
-                }
-            } else {
-                fprintf(stderr, "No mapping for this guy: %s -> %s\n", key, get_object_str(&kvp->val));
-            }
-        }
-    }
-    
-    
-    info_builder_append(&info_builder, ")");
+
     return 0;
 }
 
@@ -928,40 +905,8 @@ static int decode_msg_invoke(tvbuff_t *tvb, int offset, int len _U_, packet_info
     if (p_next >= p_end) {
         return 0;
     }
-    msgpack_object *kwargs = p_next;
-    if (kwargs->type != MSGPACK_OBJECT_MAP) {
-        error("Invoke kwargs should be MAP");
+    if (process_kwargs(jbl, offset, p_next, tvb)) {
         return 1;
-    }
-
-    guint kwargs_size = (guint) kwargs->via.u64;
-    proto_item *item2 = proto_tree_add_uint(jbl, hf_jbl_kwargs, tvb, offset, 0, kwargs_size);
-    msgpack_object_kv* kvp = kwargs->via.map.ptr;
-    msgpack_object_kv* const kvpend = kwargs->via.map.ptr + kwargs_size;
-    if (kwargs_size == 0) {
-        proto_item_append_text(item2, " (empty)");
-    } else {
-        proto_tree * sub = proto_item_add_subtree(item2, ett_jbl);
-        for (; kvp < kvpend; ++kvp) {
-            const char * key = get_object_str(&kvp->key);
-            int *hf_param = g_hash_table_lookup(jbl_params, key);
-            if (hf_param) {
-                //TODO: decide type based on hf_param, not wire type. For now need something that runs
-                switch (kvp->val.type) {
-                    case MSGPACK_OBJECT_POSITIVE_INTEGER:
-                        proto_tree_add_uint64(sub, *hf_param, tvb, offset, 0, kvp->val.via.u64);
-                        break;
-                    case MSGPACK_OBJECT_NEGATIVE_INTEGER:
-                        proto_tree_add_int64(sub, *hf_param, tvb, offset, 0, kvp->val.via.i64);
-                        break;
-                    default:
-                        proto_tree_add_string(sub, *hf_param, tvb, offset, 0, get_object_str(&kvp->val));
-                        break;
-                }
-            } else {
-                fprintf(stderr, "No mapping for this guy: %s -> %s\n", key, get_object_str(&kvp->val));
-            }
-        }
     }
 
     return 0;
@@ -1169,6 +1114,12 @@ void proto_register_jbl(void) {
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_kwargs,
             { "Keyworded-Args", "jbl.kwargs", FT_UINT32, BASE_DEC,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_key,
+            { "Key", "jbl.kwarg_key", FT_STRING, BASE_NONE,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_kwarg_val,
+            { "Value", "jbl.kwarg_val", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_kwarg_thread_id,
             { "Thread Id", "jbl.kwarg_thread_id", FT_UINT64, BASE_DEC,
