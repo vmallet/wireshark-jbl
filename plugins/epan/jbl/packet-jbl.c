@@ -82,7 +82,16 @@ static gint ett_jbl = -1;
 
 static GHashTable *jbl_params = NULL;
 
+#define JBL_MSG_HELLO           1
+#define JBL_MSG_WELCOME         2
+#define JBL_MSG_ABORT           3
+#define JBL_MSG_CHALLENGE       4
+#define JBL_MSG_AUTHENTICATE    5
+#define JBL_MSG_GOODBYE         6
+#define JBL_MSG_HEARBEAT        7
+#define JBL_MSG_ERROR           8
 #define JBL_MSG_PUBLISH        16
+#define JBL_MSG_PUBLISHED      17
 #define JBL_MSG_SUBSCRIBE      32
 #define JBL_MSG_SUBSCRIBED     33
 #define JBL_MSG_UNSUBSCRIBE    34
@@ -101,7 +110,16 @@ static GHashTable *jbl_params = NULL;
 
 
 static const value_string req_names[] = {
+    { JBL_MSG_HELLO          , "Hello" },
+    { JBL_MSG_WELCOME        , "Welcome" },
+    { JBL_MSG_ABORT          , "Abort" },
+    { JBL_MSG_CHALLENGE      , "Challenge" },
+    { JBL_MSG_AUTHENTICATE   , "Authenticate" },
+    { JBL_MSG_GOODBYE        , "Goodbye" },
+    { JBL_MSG_HEARBEAT       , "Heartbeat" },
+    { JBL_MSG_ERROR          , "Error" },
     { JBL_MSG_PUBLISH        , "Publish" },
+    { JBL_MSG_PUBLISHED      , "Published" },
     { JBL_MSG_SUBSCRIBE      , "Subscribe" },
     { JBL_MSG_SUBSCRIBED     , "Subscribed" },
     { JBL_MSG_UNSUBSCRIBE    , "Unsubscribe" },
