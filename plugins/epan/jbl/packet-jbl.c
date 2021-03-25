@@ -33,6 +33,8 @@
 
 static int proto_jbl = -1;
 
+static int hf_jbl_handshake = -1;
+
 static int hf_jbl_msg_type = -1;
 static int hf_jbl_pdu_len = -1;
 static int hf_jbl_msg_data_short = -1;
@@ -69,6 +71,8 @@ static gint ett_jbl = -1;
 
 
 static GHashTable *jbl_params = NULL;
+
+#define JBL_HANDSHAKE_MAGIC  0x7FF20000
 
 #define JBL_MSG_HELLO           1
 #define JBL_MSG_WELCOME         2
@@ -1113,8 +1117,6 @@ static int decode_msgpack(tvbuff_t *tvb _U_, int offset, int len, packet_info *p
     msgpack_object_print_buffer(str, STR_SIZE, deserialized);
     str[STR_SIZE - 1] = '\0';
     
-    append_port_info_to_builder(&info_builder, pinfo);
-
     int ret = decode_msg(tvb, offset, len, pinfo, tree, data, jbl, &deserialized, str);
     
     if (ret) {
@@ -1149,9 +1151,21 @@ static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
     proto_item *ti = proto_tree_add_item(tree, proto_jbl, tvb, 0, -1,ENC_NA);
     proto_tree *jbl_tree = proto_item_add_subtree(ti, ett_jbl);
 
+    append_port_info_to_builder(&info_builder, pinfo);
+
     guint work_len = 0;
     
     guint32 len = tvb_get_guint32(tvb, offset, ENC_BIG_ENDIAN);
+
+    // Short circuit the special non-msgpack handshake
+    if (data_len == 4 && len == JBL_HANDSHAKE_MAGIC) {
+        proto_tree_add_item(jbl_tree, hf_jbl_handshake, tvb, 0, 4, ENC_BIG_ENDIAN);
+        proto_item_append_text(ti, ", Len: %u, Handshake", data_len);
+        info_builder_append(&info_builder, " JBL HANDSHAKE");
+        col_add_str(pinfo->cinfo, COL_INFO, info_builder.buf);
+        return data_len;
+    }
+
     guint32 expected_len = data_len - 4;
 
     if (len > expected_len) {
@@ -1189,6 +1203,9 @@ void proto_register_jbl(void) {
     init_param_table();
     
     static hf_register_info hf[] = {
+        { &hf_jbl_handshake,
+            { "Handshake", "jbl.handshake", FT_UINT32, BASE_HEX,
+                NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_msg_type,
             { "Type", "jbl.type", FT_UINT8, BASE_DEC,
                 VALS (req_names), 0x0, NULL, HFILL }},
