@@ -180,14 +180,30 @@ static void info_builder_append(struct _info_builder *builder, const char *s) {
 
 
 #define JBL_BUILDER_NUM_TMP_BUF 32
+#define JBL_BUILDER_NUM_ABBREV_SUB "..."
 
-static void info_builder_append_num(struct _info_builder *builder, guint64 num) {
+static void info_builder_append_num_abbrev(struct _info_builder *builder, guint64 num,
+                                           int max_len) {
+    static const int abbrev_len = strlen(JBL_BUILDER_NUM_ABBREV_SUB);
+
     char buf[JBL_BUILDER_NUM_TMP_BUF];
     snprintf(buf, JBL_BUILDER_NUM_TMP_BUF, "%llu", num);
     buf[JBL_BUILDER_NUM_TMP_BUF - 1] = '\0';
+    char *p = buf;
+    int len = (int) strlen(buf);
+    if (max_len > 0 && max_len > abbrev_len && len > (max_len - abbrev_len)) {
+        p = &buf[len - max_len];
+        memcpy(p, JBL_BUILDER_NUM_ABBREV_SUB, abbrev_len);
+    }
     //TODO: check_init(builder);
-    info_builder_append(builder, buf);
+    info_builder_append(builder, p);
 }
+
+static void info_builder_append_num(struct _info_builder *builder, guint64 num) {
+    info_builder_append_num_abbrev(builder, num, 0);
+}
+
+
 
 #define JBL_STR_ABBREV_PREFIX   "com.harman."
 #define JBL_STR_ABBREV_SUB      "c.h."
@@ -297,6 +313,47 @@ static jbl_conv_data_t * get_or_create_conv_data(packet_info *pinfo) {
 }
 
 
+static int process_args(proto_tree *jbl, int offset, msgpack_object *p_next, tvbuff_t *tvb) {
+    msgpack_object *args = p_next;
+    if (args->type != MSGPACK_OBJECT_ARRAY) {
+        error("Args should be ARRAY");
+        return 1;
+    }
+
+    guint args_size = (guint) args->via.u64;
+    proto_item *item3 = proto_tree_add_uint(jbl, hf_jbl_args, tvb, offset, 0, args_size);
+    msgpack_object * ap = args->via.array.ptr;
+    msgpack_object * const apend = args->via.array.ptr + args_size;
+    if (args_size == 0) {
+        proto_item_append_text(item3, " (empty)");
+    } else {
+        info_builder_append(&info_builder, " ");
+        info_builder_append_obj(&info_builder, p_next);
+        proto_tree * targs = proto_item_add_subtree(item3, ett_jbl);
+        for (; ap < apend; ++ap) {
+            switch (ap->type) {
+                case MSGPACK_OBJECT_NEGATIVE_INTEGER:
+                    proto_tree_add_int64(targs, hf_jbl_arg_int, tvb, offset, 0, ap->via.i64);
+                    break;
+                case MSGPACK_OBJECT_POSITIVE_INTEGER:
+                    proto_tree_add_int64(targs, hf_jbl_arg_int, tvb, offset, 0, ap->via.u64);
+                    break;
+                case MSGPACK_OBJECT_BOOLEAN:
+                    proto_tree_add_boolean(targs, hf_jbl_arg_bool, tvb, offset, 0, ap->via.boolean);
+                    break;
+                case MSGPACK_OBJECT_STR:
+                    proto_tree_add_string(targs, hf_jbl_arg_str, tvb, offset, 0, get_object_str(ap));
+                    break;
+                default:
+                    proto_tree_add_string(targs, hf_jbl_arg_other, tvb, offset, 0, get_object_str(ap));
+                    break;
+            }
+        }
+    }
+
+    return 0;
+}
+
 static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                               proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     
@@ -341,41 +398,8 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
     if (p_next >= p_end) {
         return 0;
     }
-    msgpack_object *args = p_next;
-    if (args->type != MSGPACK_OBJECT_ARRAY) {
-        error("Event args should be ARRAY");
+    if (process_args(jbl, offset, p_next, tvb)) {
         return 1;
-    }
-    
-    guint args_size = (guint) args->via.u64;
-    proto_item *item3 = proto_tree_add_uint(jbl, hf_jbl_args, tvb, offset, 0, args_size);
-    msgpack_object * ap = args->via.array.ptr;
-    msgpack_object * const apend = args->via.array.ptr + args_size;
-    if (args_size == 0) {
-        proto_item_append_text(item3, " (empty)");
-    } else {
-        info_builder_append(&info_builder, " ");
-        info_builder_append_obj(&info_builder, p_next);
-        proto_tree * targs = proto_item_add_subtree(item3, ett_jbl);
-        for (; ap < apend; ++ap) {
-            switch (ap->type) {
-                case MSGPACK_OBJECT_NEGATIVE_INTEGER:
-                    proto_tree_add_int64(targs, hf_jbl_arg_int, tvb, offset, 0, ap->via.i64);
-                    break;
-                case MSGPACK_OBJECT_POSITIVE_INTEGER:
-                    proto_tree_add_int64(targs, hf_jbl_arg_int, tvb, offset, 0, ap->via.u64);
-                    break;
-                case MSGPACK_OBJECT_BOOLEAN:
-                    proto_tree_add_boolean(targs, hf_jbl_arg_bool, tvb, offset, 0, ap->via.boolean);
-                    break;
-                case MSGPACK_OBJECT_STR:
-                    proto_tree_add_string(targs, hf_jbl_arg_str, tvb, offset, 0, get_object_str(ap));
-                    break;
-                default:
-                    proto_tree_add_string(targs, hf_jbl_arg_other, tvb, offset, 0, get_object_str(ap));
-                    break;
-            }
-        }
     }
 
     
@@ -431,103 +455,62 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
         //TODO: include err in info?
         info_builder_append(&info_builder, "Not enough arguments, needed at least 5, got: ");
         info_builder_append_num(&info_builder, (int) (p_end - p_next));;
-        error("Protocol error: publish needs 5 args at least");
+        error("Protocol error: Event needs 5 args at least");
         return 1;
     }
-    
+
     // sub_id
     if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
         //TODO: include err in info?
-        error("Procotol error: publish arg 2 should be an int");
+        error("Procotol error: Event arg 2 (Sub Id) should be an int");
         return 1;
     }
-    
-    gint64 sub_id =  p_next->via.i64; //TODO: is it really an int64?
-    proto_tree_add_uint(jbl, hf_jbl_sub_id, tvb, offset, 0, (guint) sub_id); //TODO CAST
-    info_builder_append(&info_builder, "SubId=");
-    info_builder_append_num(&info_builder, sub_id);
+
+    guint64 sub_id = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_sub_id, tvb, offset, 0, sub_id);
 
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
-    char * sub_name = wmem_map_lookup(data->subs, &sub_id);
-    if (!sub_name) {
+    char * event_name = wmem_map_lookup(data->subs, &sub_id);
+    if (!event_name) {
         fprintf(stderr, "NOT FOUND SUB: %lld\n", sub_id);
+        info_builder_append(&info_builder, "SubId=");
+        info_builder_append_num(&info_builder, sub_id);
     } else {
-        proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, sub_name);
-        fprintf(stderr, "YESSSSSSSS: %lld: %s\n", sub_id, sub_name);
-        info_builder_append(&info_builder, " (");
-        info_builder_append_abbrev_max(&info_builder, sub_name, 48);
-        info_builder_append(&info_builder, ")");
+        proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
+        fprintf(stderr, "YESSSSSSSS: %lld: %s\n", sub_id, event_name);
+        info_builder_append_abbrev_max(&info_builder, event_name, 48);
     }
-    
+
     // event_id
     p_next++;
     if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
         //TODO: include err in info?
-        error("Procotol error: publish arg 3 should be an int");
+        error("Procotol error: Event arg 3 should be an int");
         return 1;
     }
-    
-    guint64 event_id = p_next->via.i64; //TODO: is it really an int64?
+
+    guint64 event_id = p_next->via.u64;
     proto_tree_add_uint64(jbl, hf_jbl_event_id, tvb, offset, 0, event_id);
-    info_builder_append(&info_builder, " EventId=");
-    info_builder_append_num(&info_builder, event_id);
+    info_builder_append(&info_builder, " Id=");
+    info_builder_append_num_abbrev(&info_builder, event_id, 7);
 
 
     // Empty map
     p_next++; // still safe
     // TODO: name it
     //TODO: do it;
-    
 
-    // event name
-    p_next++;
-    if (p_next->type != MSGPACK_OBJECT_STR) {
-        error("Event name should be string");
-        return 1;
-    }
-    const char *event_name = get_object_str(p_next);
-    proto_tree_add_string(jbl, hf_jbl_msg_event_name, tvb, offset, 0, event_name);
-    info_builder_append(&info_builder, ", \"");
-    info_builder_append_abbrev_max(&info_builder, event_name, 48);
-    info_builder_append(&info_builder, "\"");
-    
 
-    
     // event args
     p_next++;
     if (p_next >= p_end) {
         return 0;
     }
-    msgpack_object *args = p_next;
-    if (args->type != MSGPACK_OBJECT_ARRAY) {
-        error("Event args should be ARRAY");
+    if (process_args(jbl, offset, p_next, tvb)) {
         return 1;
     }
-    
-    guint args_size = (guint) args->via.u64;
-    proto_item *item3 = proto_tree_add_uint(jbl, hf_jbl_args, tvb, offset, 0, args_size);
-    msgpack_object * ap = args->via.array.ptr;
-    msgpack_object * const apend = args->via.array.ptr + args_size;
-    if (args_size == 0) {
-        proto_item_append_text(item3, " (empty)");
-    } else {
-//        proto_tree * targs = proto_item_add_subtree(item3, ett_jbl);
-        for (; ap < apend; ++ap) {
-            const char *str = get_object_str(ap);
-            //TODO: handle event args for real
-//            int * hf_arg = next_hf_arg();
-//            if (hf_arg == NULL) {
-//                fprintf(stderr, "Ran out of args for: %s\n", str);
-//            } else {
-//                proto_tree_add_string(targs, *hf_arg, tvb, offset, 0, str);
-//            }
-            info_builder_append(&info_builder, ", \"");
-            info_builder_append_max(&info_builder, str, 48);
-            info_builder_append(&info_builder, "\"");
-        }
-    }
 
-    
+    //TODO: revisit kwargs, they need some real attention
     // Event kwargs
     p_next++;
     if (p_next >= p_end) {
