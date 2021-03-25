@@ -302,7 +302,6 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
     
     // [16, 13, {}, "com.harman.test.inputEvent", ["ir-volumeup", "1"]]
     // [16, 187003, {}, "com.harman.music.stateChanged", ["com.harman.HDMI"], {"service"=>"HDMI", "state"=>"paused"}]
-    info_builder_append(&info_builder, "Publish: ");
     if ((p_end - p_next) < 3) {
         //TODO: include err in info?
         error("Protocol error: publish needs 2 args at least");
@@ -428,7 +427,6 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
 static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                             proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [36, 10, 4588522949814990, {}, ["ir-power", "0"]]
-    info_builder_append(&info_builder, "Event: ");
     if ((p_end - p_next) < 4) {
         //TODO: include err in info?
         info_builder_append(&info_builder, "Not enough arguments, needed at least 5, got: ");
@@ -581,7 +579,6 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
 static int decode_msg_subscribe(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                                 proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [32, 9, {}, "com.harman.powerModeChanged"]
-    info_builder_append(&info_builder, "Subscribe: ");
     if ((p_end - p_next) < 3) {
         //TODO: include err in info?
         info_builder_append(&info_builder, "Not enough arguments, needed at least 3, got: ");
@@ -625,7 +622,6 @@ static int decode_msg_subscribe(tvbuff_t *tvb, int offset, int len _U_, packet_i
 static int decode_msg_subscribed(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                                  proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [33, 9, 118]
-    info_builder_append(&info_builder, "Subscribed: ");
     if ((p_end - p_next) < 2) {
         //TODO: include err in info?
         info_builder_append(&info_builder, "Not enough arguments, needed at least 2, got: ");
@@ -677,7 +673,6 @@ static int decode_msg_subscribed(tvbuff_t *tvb, int offset, int len _U_, packet_
 static int decode_msg_register(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                                proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [64, 5, {}, "com.harman.lcdis.source"]
-    info_builder_append(&info_builder, "Register: ");
     if ((p_end - p_next) < 3) {
         //TODO: include err in info?
         info_builder_append(&info_builder, "Not enough arguments, needed at least 3, got: ");
@@ -721,7 +716,6 @@ static int decode_msg_register(tvbuff_t *tvb, int offset, int len _U_, packet_in
 static int decode_msg_registered(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                                  proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [65, 5, 406]
-    info_builder_append(&info_builder, "Registered: ");
     if ((p_end - p_next) < 2) {
         //TODO: include err in info?
         info_builder_append(&info_builder, "Not enough arguments, needed at least 2, got: ");
@@ -780,7 +774,6 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
     // [50, 187000, {}, [0]]
     // [50, 187865, {}, [true, "music"], {"music"=>{"hotel_max_vol"=>32, "mute"=>1, "volume"=>11}}]
 
-    info_builder_append(&info_builder, "Call Result: ");
     if ((p_end - p_next) < 2) {
         //TODO: include err in info?
         error("Protocol error: call result needs 2 args at least");
@@ -907,6 +900,10 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
     guint type = (guint) p->via.i64;
     proto_tree_add_uint(jbl, hf_jbl_msg_type, tvb, offset, 0, type);
 
+    info_builder_append(&info_builder, val_to_str(type, req_names, "Unknown"));
+    info_builder_append(&info_builder, ": ");
+
+    int ret = 0;
     p++;
     switch (type) {
         case JBL_MSG_PUBLISH:
@@ -930,6 +927,9 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
         case JBL_MSG_REGISTERED_RPC:
             decode_msg_registered(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
+        default:
+            ret = 1;
+            break;
     }
 
     const char *dot = "...";
@@ -949,7 +949,7 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
 
     proto_item_append_text(jbl, ", Req: %s (%d)", val_to_str(type, req_names, "Unknown (0x%02x)"), type);
 
-    return 0;
+    return ret;
 }
 
 static void append_port_info_to_builder(struct _info_builder *builder, packet_info *pinfo) {
@@ -980,11 +980,10 @@ static int decode_msgpack(tvbuff_t *tvb _U_, int offset, int len, packet_info *p
     str[STR_SIZE - 1] = '\0';
     
     append_port_info_to_builder(&info_builder, pinfo);
-    char *builder_cur = info_builder.cur;
+
+    int ret = decode_msg(tvb, offset, len, pinfo, tree, data, jbl, &deserialized, str);
     
-    decode_msg(tvb, offset, len, pinfo, tree, data, jbl, &deserialized, str);
-    
-    if (info_builder.cur == builder_cur) {
+    if (ret) {
         info_builder_append_max(&info_builder, str, MAX_INFO_SIZE);
     }
     col_add_str(pinfo->cinfo, COL_INFO, info_builder.buf);
