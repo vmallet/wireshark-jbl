@@ -41,6 +41,8 @@ static int hf_jbl_seq_num = -1;
 static int hf_jbl_msg_event_name = -1;
 static int hf_jbl_sub_id = -1;
 static int hf_jbl_event_id = -1;
+static int hf_jbl_rpc_name = -1;
+static int hf_jbl_rpc_id = -1;
 
 static int hf_jbl_kwarg_thread_id = -1;
 static int hf_jbl_kwarg_state = -1;
@@ -103,6 +105,8 @@ static struct _info_builder {
 typedef struct _jbl_conv_data {
     wmem_map_t *sub_reqs; // seq_num -> event_name
     wmem_map_t *subs; // sub_id -> event_name
+    wmem_map_t *rpc_reqs; // seq_num -> rpc_name
+    wmem_map_t *rpcs; // rpc_id -> rpc_name
 } jbl_conv_data_t;
 
 
@@ -246,6 +250,9 @@ static gint64 * make_durable_key_int64(gint64 key_val) {
 static void init_conv_data(jbl_conv_data_t *data) {
     data->sub_reqs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
     data->subs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
+    data->rpc_reqs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
+    data->rpcs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
+
     wmem_map_insert(data->subs, make_durable_key_int64(42), "salut les amis");
 }
 
@@ -650,6 +657,102 @@ static int decode_msg_subscribed(tvbuff_t *tvb, int offset, int len _U_, packet_
     return 0;
 }
 
+static int decode_msg_register(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
+                               proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
+    // [64, 5, {}, "com.harman.lcdis.source"]
+    info_builder_append(&info_builder, "Register: ");
+    if ((p_end - p_next) < 3) {
+        //TODO: include err in info?
+        info_builder_append(&info_builder, "Not enough arguments, needed at least 3, got: ");
+        info_builder_append_num(&info_builder, (int) (p_end - p_next));;
+        error("Protocol error: Register needs 3 args");
+        return 1;
+    }
+
+    // seq_num
+    if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+        //TODO: include err in info?
+        error("Procotol error: Register arg 2 (Seq Num) should be an int");
+        return 1;
+    }
+
+    guint64 seq_num = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
+
+    // Empty map
+    p_next++; // still safe
+    // TODO: name it
+    //TODO: do it;
+
+    // RPC name
+    p_next++;
+    if (p_next->type != MSGPACK_OBJECT_STR) {
+        error("RPC name should be STR");
+        return 1;
+    }
+    const char *rpc_name = get_object_str(p_next);
+    proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
+    info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
+
+    const char *durable_name = wmem_strdup(wmem_file_scope(), rpc_name);
+    gint64 *key = make_durable_key_int64(seq_num);
+    jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+    wmem_map_insert(data->rpc_reqs, key, (void *) durable_name);
+    return 0;
+}
+
+static int decode_msg_registered(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
+                                 proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
+    // [65, 5, 406]
+    info_builder_append(&info_builder, "Registered: ");
+    if ((p_end - p_next) < 2) {
+        //TODO: include err in info?
+        info_builder_append(&info_builder, "Not enough arguments, needed at least 2, got: ");
+        info_builder_append_num(&info_builder, (int) (p_end - p_next));;
+        error("Protocol error: Registered needs 3 args");
+        return 1;
+    }
+
+    // seq_num
+    if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+        //TODO: include err in info?
+        error("Procotol error: Registered arg 2 should be an int");
+        return 1;
+    }
+
+    gint64 seq_num = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
+
+    // rpc_id
+    p_next++;
+    if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+        //TODO: include err in info?
+        error("Procotol error: RPC Id (Registered arg 2) should be an int");
+        return 1;
+    }
+
+    gint64 rpc_id = p_next->via.i64;
+    proto_tree_add_uint64(jbl, hf_jbl_rpc_id, tvb, offset, 0, rpc_id);
+
+    jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+    char * rpc_name = wmem_map_lookup(data->rpc_reqs, &seq_num);
+    if (rpc_name) {
+        fprintf(stderr, "found mapping! %s\n", rpc_name);
+        gint64 *key = make_durable_key_int64(rpc_id);
+        wmem_map_insert(data->rpcs, key, rpc_name);
+        info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
+        proto_item * rpc_item = proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
+        proto_item_set_generated(rpc_item);
+    } else {
+        fprintf(stderr, "register miss: seq_num = %lld\n", seq_num);
+        info_builder_append_num(&info_builder, seq_num);
+    }
+    info_builder_append(&info_builder, " => ");
+    info_builder_append_num(&info_builder, rpc_id);
+
+    return 0;
+}
+
 //TODO: recover called name from seq number mapping
 static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                                   proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
@@ -809,6 +912,12 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
             break;
         case 50: //TODO const
             decode_msg_call_result(tvb, offset, len, pinfo, jbl, p, p_end);
+            break;
+        case 64: //TODO const
+            decode_msg_register(tvb, offset, len, pinfo, jbl, p, p_end);
+            break;
+        case 65: //TODO const
+            decode_msg_registered(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
     }
     
@@ -1033,6 +1142,12 @@ void proto_register_jbl(void) {
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_event_id,
             { "Event Id", "jbl.event_id", FT_UINT64, BASE_DEC,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_rpc_name,
+            { "RPC Name", "jbl.rpc_name", FT_STRING, BASE_NONE,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_rpc_id,
+            { "RPC Id", "jbl.rpc_id", FT_UINT64, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }}
 
         
