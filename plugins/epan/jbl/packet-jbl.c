@@ -858,6 +858,114 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
     return 0;
 }
 
+static int decode_msg_invoke(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
+                             proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
+
+    // [68, 2058, 84, {}, ["com.harman.HDMI"]]
+    // [68, 2070, 82, {}, ["com.harman.HDMI"], {"service"=>"HDMI", "state"=>"paused"}]
+    // [68, 2074, 404, {}, ["vol12"], {"dis_mode"=>0, "dis_time"=>5}]
+
+    if ((p_end - p_next) < 3) {
+        //TODO: include err in info?
+        error("Protocol error: Invoke needs 2 args at least");
+        return 1;
+    }
+
+    // Seq number
+    if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+        //TODO: include err in info?
+        error("Procotol error: Invoke arg 2 should be an int");
+        return 1;
+    }
+
+    guint64 seq_num = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
+
+
+    // rpc_id
+    p_next++;
+    if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+        //TODO: include err in info?
+        error("Procotol error: Invoke arg 3 (RPC Id) should be an int");
+        return 1;
+    }
+
+    guint64 rpc_id = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_rpc_id, tvb, offset, 0, rpc_id);
+
+    jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+    char * rpc_name = wmem_map_lookup(data->rpcs, &rpc_id);
+    if (rpc_name) {
+        fprintf(stderr, "found mapping! %s\n", rpc_name);
+        info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
+        proto_item * rpc_item = proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
+        proto_item_set_generated(rpc_item);
+    } else {
+        fprintf(stderr, "Invoke miss: seq_num = %llu\n", rpc_id);
+        info_builder_append(&info_builder, "RpcId=");
+        info_builder_append_num(&info_builder, rpc_id);
+    }
+
+
+    // Empty map
+    p_next++; // still safe
+    // TODO: name it
+    //TODO: do it;
+
+
+    // Invoke args
+    p_next++;
+    if (p_next >= p_end) {
+        return 0;
+    }
+    if (process_args(jbl, offset, p_next, tvb)) {
+        return 1;
+    }
+
+
+    // Invoke kwargs
+    p_next++;
+    if (p_next >= p_end) {
+        return 0;
+    }
+    msgpack_object *kwargs = p_next;
+    if (kwargs->type != MSGPACK_OBJECT_MAP) {
+        error("Invoke kwargs should be MAP");
+        return 1;
+    }
+
+    guint kwargs_size = (guint) kwargs->via.u64;
+    proto_item *item2 = proto_tree_add_uint(jbl, hf_jbl_kwargs, tvb, offset, 0, kwargs_size);
+    msgpack_object_kv* kvp = kwargs->via.map.ptr;
+    msgpack_object_kv* const kvpend = kwargs->via.map.ptr + kwargs_size;
+    if (kwargs_size == 0) {
+        proto_item_append_text(item2, " (empty)");
+    } else {
+        proto_tree * sub = proto_item_add_subtree(item2, ett_jbl);
+        for (; kvp < kvpend; ++kvp) {
+            const char * key = get_object_str(&kvp->key);
+            int *hf_param = g_hash_table_lookup(jbl_params, key);
+            if (hf_param) {
+                //TODO: decide type based on hf_param, not wire type. For now need something that runs
+                switch (kvp->val.type) {
+                    case MSGPACK_OBJECT_POSITIVE_INTEGER:
+                        proto_tree_add_uint64(sub, *hf_param, tvb, offset, 0, kvp->val.via.u64);
+                        break;
+                    case MSGPACK_OBJECT_NEGATIVE_INTEGER:
+                        proto_tree_add_int64(sub, *hf_param, tvb, offset, 0, kvp->val.via.i64);
+                        break;
+                    default:
+                        proto_tree_add_string(sub, *hf_param, tvb, offset, 0, get_object_str(&kvp->val));
+                        break;
+                }
+            } else {
+                fprintf(stderr, "No mapping for this guy: %s -> %s\n", key, get_object_str(&kvp->val));
+            }
+        }
+    }
+
+    return 0;
+}
 
 static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo _U_,
                       proto_tree *tree _U_, void *data _U_, proto_tree *jbl _U_, msgpack_object *object, char *str) {
@@ -909,6 +1017,9 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
             break;
         case JBL_MSG_REGISTERED_RPC:
             decode_msg_registered(tvb, offset, len, pinfo, jbl, p, p_end);
+            break;
+        case JBL_MSG_INVOKE_RPC:
+            decode_msg_invoke(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
         default:
             ret = 1;
