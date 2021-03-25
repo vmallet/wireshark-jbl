@@ -72,24 +72,41 @@ static gint ett_jbl = -1;
 
 static GHashTable *jbl_params = NULL;
 
+#define JBL_MSG_PUBLISH        16
+#define JBL_MSG_SUBSCRIBE      32
+#define JBL_MSG_SUBSCRIBED     33
+#define JBL_MSG_UNSUBSCRIBE    34
+#define JBL_MSG_UNSUBSCRIBED   35
+#define JBL_MSG_EVENT          36
+#define JBL_MSG_CALL           48
+#define JBL_MSG_CANCEL         49
+#define JBL_MSG_CALL_RESULT    50
+#define JBL_MSG_REGISTER_RPC   64
+#define JBL_MSG_REGISTERED_RPC 65
+#define JBL_MSG_UNREGISTER     66
+#define JBL_MSG_UNREGISTERED   67
+#define JBL_MSG_INVOKE_RPC     68
+#define JBL_MSG_INTERRUPT      69
+#define JBL_MSG_INVOKE_YIELD   70
+
 
 static const value_string req_names[] = {
-    { 16, "Publish" },
-    { 32, "Subscribe" },
-    { 33, "Subscribed" },
-    { 34, "Unsubscribe" },
-    { 35, "Unsubscribed" },
-    { 36, "Event" },
-    { 48, "Call" },
-    { 49, "Cancel" },
-    { 50, "CallResult" },
-    { 64, "Register" },
-    { 65, "Registered" },
-    { 66, "Unregister" },
-    { 67, "Unregistered" },
-    { 68, "Invoke" },
-    { 69, "Interrupt" },
-    { 70, "Yield" },
+    { JBL_MSG_PUBLISH        , "Publish" },
+    { JBL_MSG_SUBSCRIBE      , "Subscribe" },
+    { JBL_MSG_SUBSCRIBED     , "Subscribed" },
+    { JBL_MSG_UNSUBSCRIBE    , "Unsubscribe" },
+    { JBL_MSG_UNSUBSCRIBED   , "Unsubscribed" },
+    { JBL_MSG_EVENT          , "Event" },
+    { JBL_MSG_CALL           , "Call" },
+    { JBL_MSG_CANCEL         , "Cancel" },
+    { JBL_MSG_CALL_RESULT    , "CallResult" },
+    { JBL_MSG_REGISTER_RPC   , "Register" },
+    { JBL_MSG_REGISTERED_RPC , "Registered" },
+    { JBL_MSG_UNREGISTER     , "Unregister" },
+    { JBL_MSG_UNREGISTERED   , "Unregistered" },
+    { JBL_MSG_INVOKE_RPC     , "Invoke" },
+    { JBL_MSG_INTERRUPT      , "Interrupt" },
+    { JBL_MSG_INVOKE_YIELD   , "Yield" },
     { 0, "NULL" }
 };
 
@@ -898,25 +915,25 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
     
     p++;
     switch (type) {
-        case 16: //TODO const
+        case JBL_MSG_PUBLISH:
             decode_msg_publish(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
-        case 32: //TODO const
+        case JBL_MSG_SUBSCRIBE:
             decode_msg_subscribe(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
-        case 33: //TODO const
+        case JBL_MSG_SUBSCRIBED:
             decode_msg_subscribed(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
-        case 36: //TODO const
+        case JBL_MSG_EVENT:
             decode_msg_event(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
-        case 50: //TODO const
+        case JBL_MSG_CALL_RESULT:
             decode_msg_call_result(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
-        case 64: //TODO const
+        case JBL_MSG_REGISTER_RPC:
             decode_msg_register(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
-        case 65: //TODO const
+        case JBL_MSG_REGISTERED_RPC:
             decode_msg_registered(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
     }
