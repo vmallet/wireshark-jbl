@@ -136,6 +136,9 @@ static const value_string type_names[] = {
     { 0, "NULL" }
 };
 
+/* Desegmentation of JBL messages over TCP */
+static gboolean jbl_desegment = TRUE;
+
 static struct _info_builder {
     char * buf;
     int size;
@@ -1232,8 +1235,7 @@ static int dissect_jbl_pdu(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, 
 
 static int dissect_jbl(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_) {
     bool first = TRUE;
-    //TODO: take care of TODOs below (i.e. add jbl_desegment config parameter)
-    tcp_dissect_pdus(tvb, pinfo, tree, TRUE /* TODO */, JBL_MINIMUM_PDU_LENGTH,
+    tcp_dissect_pdus(tvb, pinfo, tree, jbl_desegment, JBL_MINIMUM_PDU_LENGTH,
                      get_jbl_pdu_len, dissect_jbl_pdu, &first);
     return tvb_captured_length(tvb);
 }
@@ -1354,6 +1356,14 @@ void proto_register_jbl(void) {
 
     proto_register_field_array(proto_jbl, hf, array_length(hf));
     proto_register_subtree_array(ett, array_length(ett));
+
+    module_t * jbl_module = prefs_register_protocol(proto_jbl, NULL);
+
+    prefs_register_bool_preference(jbl_module, "desegment",
+                                   "Reassemble JBL messages spanning multiple TCP segments",
+                                   "Whether the JBL dissector should reassemble messages spanning multiple TCP segments."
+                                   " To use this option, you must also enable \"Allow subdissectors to reassemble TCP streams\" in the TCP protocol settings.",
+                                   &jbl_desegment);
 }
 
 
@@ -1361,5 +1371,5 @@ void proto_reg_handoff_jbl(void) {
     static dissector_handle_t jbl_handle;
 
     jbl_handle = create_dissector_handle(dissect_jbl, proto_jbl);
-    dissector_add_uint("tcp.port", JBL_PORT, jbl_handle);
+    dissector_add_uint_with_preference("tcp.port", JBL_PORT, jbl_handle);
 }
