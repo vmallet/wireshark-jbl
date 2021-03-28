@@ -139,6 +139,10 @@ static const value_string type_names[] = {
 /* Desegmentation of JBL messages over TCP */
 static gboolean jbl_desegment = TRUE;
 
+/* Abbreviate com.harman. to c.h.  */
+static gboolean jbl_abbreviate = TRUE;
+
+
 static struct _info_builder {
     char * buf;
     int size;
@@ -236,17 +240,19 @@ static void info_builder_append_num(struct _info_builder *builder, guint64 num) 
 
 #define JBL_STR_ABBREV_PREFIX   "com.harman."
 #define JBL_STR_ABBREV_SUB      "c.h."
-static const int jbl_abbrev_prefix_len = strlen(JBL_STR_ABBREV_PREFIX);
-static const int jbl_abbrev_sub_len = strlen(JBL_STR_ABBREV_SUB);
 
 /* Shortens "com.harman." leading string as "c.h." */
-static void info_builder_append_abbrev_max(struct _info_builder *builder, const char *s, int maxlen) {
-    int max = maxlen;
+static void info_builder_append_abbrev_max(struct _info_builder *builder, const char *s,
+                                           int max_len) {
+    static const int prefix_len = strlen(JBL_STR_ABBREV_PREFIX);
+    static const int sub_len = strlen(JBL_STR_ABBREV_SUB);
+
+    int max = max_len;
     const char *p = s;
-    if (0 == strncmp(s, JBL_STR_ABBREV_PREFIX, jbl_abbrev_prefix_len)) {
+    if (jbl_abbreviate && 0 == strncmp(s, JBL_STR_ABBREV_PREFIX, prefix_len)) {
         info_builder_append_max(builder, JBL_STR_ABBREV_SUB, max);
-        max -= jbl_abbrev_sub_len;
-        p += jbl_abbrev_prefix_len;
+        max -= sub_len;
+        p += prefix_len;
     }
     info_builder_append_max(builder, p, max);
 }
@@ -1364,6 +1370,12 @@ void proto_register_jbl(void) {
                                    "Whether the JBL dissector should reassemble messages spanning multiple TCP segments."
                                    " To use this option, you must also enable \"Allow subdissectors to reassemble TCP streams\" in the TCP protocol settings.",
                                    &jbl_desegment);
+    prefs_register_bool_preference(jbl_module, "abbreviate",
+                                   "Shorten \"com.harman.\" prefix to \"c.h.\" in info line",
+                                   "Whether the JBL dissector should abbreviate "
+                                   "\"com.harman.\" prefixes in the info line, for example: "
+                                   "\"com.harman.HDMI\" -> \"c.h.HDMI\"",
+                                   &jbl_abbreviate);
 }
 
 
