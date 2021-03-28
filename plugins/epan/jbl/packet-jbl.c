@@ -142,6 +142,8 @@ static gboolean jbl_desegment = TRUE;
 /* Abbreviate com.harman. to c.h.  */
 static gboolean jbl_abbreviate = TRUE;
 
+/* Whether or not to resolve seq_num -> rpc_name for CallResult / Yield */
+static gboolean jbl_resolve_calls = TRUE;
 
 static struct _info_builder {
     char * buf;
@@ -158,6 +160,8 @@ typedef struct _jbl_conv_data {
     wmem_map_t *subs; // sub_id -> event_name
     wmem_map_t *rpc_reqs; // seq_num -> rpc_name
     wmem_map_t *rpcs; // rpc_id -> rpc_name
+    wmem_map_t *calls; // seq_num -> rpc_name
+    wmem_map_t *invokes; // seq_num -> rpc_name
 } jbl_conv_data_t;
 
 
@@ -342,6 +346,8 @@ static void init_conv_data(jbl_conv_data_t *data) {
     data->subs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
     data->rpc_reqs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
     data->rpcs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
+    data->calls = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
+    data->invokes = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
 }
 
 static jbl_conv_data_t * get_or_create_conv_data(packet_info *pinfo) {
@@ -818,6 +824,13 @@ static int decode_msg_call(tvbuff_t *tvb, int offset, int len _U_, packet_info *
     proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
     info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
 
+    if (jbl_resolve_calls) {
+        jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+        gint64 *key = make_durable_key_int64(seq_num);
+        const char *durable_name = jbl_intern_string(data, rpc_name);
+        wmem_map_insert(data->calls, key, (void *) durable_name);
+    }
+
 
     // Call args
     p_next++;
@@ -865,11 +878,25 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
         return 1;
     }
     
-    guint64 num = p_next->via.u64;
-    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, num);
-    info_builder_append(&info_builder, "Seq=");
-    info_builder_append_num(&info_builder, num);
-                            
+    guint64 seq_num = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
+
+    char *rpc_name = NULL;
+    if (jbl_resolve_calls) {
+        jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+        rpc_name = wmem_map_lookup(data->calls, &seq_num);
+    }
+
+    if (rpc_name != NULL) {
+        info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
+        proto_item * rpc_item = proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
+        proto_item_set_generated(rpc_item);
+    } else {
+        info_builder_append(&info_builder, "Seq=");
+        info_builder_append_num(&info_builder, seq_num);
+    }
+    info_builder_append(&info_builder, " =>");
+
 
     // Empty map
     p_next++; // still safe
@@ -947,6 +974,12 @@ static int decode_msg_invoke(tvbuff_t *tvb, int offset, int len _U_, packet_info
         info_builder_append_num(&info_builder, rpc_id);
     }
 
+    if (jbl_resolve_calls && rpc_name != NULL) {
+        gint64 *key = make_durable_key_int64(seq_num);
+        // Note: rpc_name came from our lookup, it's already interned
+        wmem_map_insert(data->invokes, key, (void *) rpc_name);
+    }
+
 
     // Empty map
     p_next++; // still safe
@@ -997,10 +1030,24 @@ static int decode_msg_yield(tvbuff_t *tvb, int offset, int len _U_, packet_info 
         return 1;
     }
 
-    guint64 num = p_next->via.u64;
-    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, num);
-    info_builder_append(&info_builder, "Seq=");
-    info_builder_append_num(&info_builder, num);
+    guint64 seq_num = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
+
+    char *rpc_name = NULL;
+    if (jbl_resolve_calls) {
+        jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+        rpc_name = wmem_map_lookup(data->invokes, &seq_num);
+    }
+
+    if (rpc_name != NULL) {
+        info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
+        proto_item * rpc_item = proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
+        proto_item_set_generated(rpc_item);
+    } else {
+        info_builder_append(&info_builder, "Seq=");
+        info_builder_append_num(&info_builder, seq_num);
+    }
+    info_builder_append(&info_builder, " =>");
 
 
     // Empty map
@@ -1387,6 +1434,12 @@ void proto_register_jbl(void) {
                                    "\"com.harman.\" prefixes in the info line, for example: "
                                    "\"com.harman.HDMI\" -> \"c.h.HDMI\"",
                                    &jbl_abbreviate);
+    prefs_register_bool_preference(jbl_module, "resolve_calls",
+                                   "Resolve names in RPC calls (CallResult/Yield)",
+                                   "Keep track of RPC names used in each Call and Invoke "
+                                   "message to be able to resolve RPC names in CallResult "
+                                   "and Yield messages. Uses more memory, but not too much.",
+                                   &jbl_resolve_calls);
 }
 
 
