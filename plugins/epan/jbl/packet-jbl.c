@@ -38,6 +38,7 @@ static int proto_jbl = -1;
 static int hf_jbl_handshake = -1;
 
 static int hf_jbl_type = -1;
+static int hf_jbl_call_type = -1;
 static int hf_jbl_len = -1;
 static int hf_jbl_multi_pdu = -1;
 static int hf_jbl_msg_data_short = -1;
@@ -48,6 +49,7 @@ static int hf_jbl_event_id = -1;
 static int hf_jbl_sub_id = -1;
 static int hf_jbl_rpc_name = -1;
 static int hf_jbl_rpc_id = -1;
+static int hf_jbl_error = -1;
 
 static int hf_jbl_kwargs = -1;
 static int hf_jbl_kwarg_key = -1;
@@ -854,8 +856,6 @@ static int decode_msg_call(tvbuff_t *tvb, int offset, int len _U_, packet_info *
     return 0;
 }
 
-
-//TODO: recover called name from seq number mapping
 static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                                   proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [50, 274, {}, ["com.harman.idle"]]
@@ -1009,7 +1009,6 @@ static int decode_msg_invoke(tvbuff_t *tvb, int offset, int len _U_, packet_info
     return 0;
 }
 
-//TODO: recover invoked name from seq number mapping
 static int decode_msg_yield(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                             proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [70, 2143, {}]
@@ -1078,6 +1077,86 @@ static int decode_msg_yield(tvbuff_t *tvb, int offset, int len _U_, packet_info 
     return 0;
 }
 
+static int decode_msg_error(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
+                            proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
+    // [8, 48, 15, {}, "wamp.error.no_such_procedure"]
+
+    if ((p_end - p_next) < 3) {
+        //TODO: include err in info?
+        error("Protocol error: Error needs 3 args at least");
+        return 1;
+    }
+
+    // Call type
+    if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+        //TODO: include err in info?
+        error("Procotol error: Error arg 3 should be an int");
+        return 1;
+    }
+
+    guint call_type = (guint) p_next->via.u64;
+    proto_tree_add_uint(jbl, hf_jbl_call_type, tvb, offset, 0, call_type);
+
+
+    // Seq number
+    p_next++;
+    if (p_next->type != MSGPACK_OBJECT_POSITIVE_INTEGER) {
+        //TODO: include err in info?
+        error("Procotol error: Error arg 2 should be an int");
+        return 1;
+    }
+
+    guint64 seq_num = p_next->via.u64;
+    proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
+
+    char *rpc_name = NULL;
+    if (jbl_resolve_calls) {
+        jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+        switch (call_type) {
+            case JBL_MSG_CALL:
+                rpc_name = wmem_map_lookup(data->calls, &seq_num);
+                break;
+            case JBL_MSG_INVOKE_RPC:
+                rpc_name = wmem_map_lookup(data->invokes, &seq_num);
+                break;
+            default:
+                // TODO: we could consider logging this; what other type could it be?
+                break;
+        }
+    }
+
+    if (rpc_name != NULL) {
+        info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
+        proto_item * rpc_item = proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
+        proto_item_set_generated(rpc_item);
+    } else {
+        info_builder_append(&info_builder, "Seq=");
+        info_builder_append_num(&info_builder, seq_num);
+    }
+    info_builder_append(&info_builder, " (");
+    info_builder_append(&info_builder, val_to_str(call_type, type_names, "Unknown (%d)"));
+    info_builder_append(&info_builder, ") => ");
+
+
+    // Empty map
+    p_next++; // still safe
+    // TODO: name it
+    //TODO: do it;
+
+
+    // Error
+    p_next++;
+    if (p_next->type != MSGPACK_OBJECT_STR) {
+        error("Error name should be STR");
+        return 1;
+    }
+    const char *error_name = get_object_str(p_next);
+    proto_tree_add_string(jbl, hf_jbl_error, tvb, offset, 0, error_name);
+    info_builder_append_abbrev_max(&info_builder, error_name, 48);
+
+    return 0;
+}
+
 static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo _U_,
                       proto_tree *tree _U_, void *data _U_, proto_tree *jbl _U_, msgpack_object *object, char *str) {
     if (object->type != MSGPACK_OBJECT_ARRAY) {
@@ -1109,6 +1188,9 @@ static int decode_msg(tvbuff_t *tvb _U_, int offset, int len, packet_info *pinfo
     int ret = 0;
     p++;
     switch (type) {
+        case JBL_MSG_ERROR:
+            decode_msg_error(tvb, offset, len, pinfo, jbl, p, p_end);
+            break;
         case JBL_MSG_PUBLISH:
             decode_msg_publish(tvb, offset, len, pinfo, jbl, p, p_end);
             break;
@@ -1316,6 +1398,9 @@ void proto_register_jbl(void) {
         { &hf_jbl_type,
             { "Type", "jbl.type", FT_UINT8, BASE_DEC,
                 VALS (type_names), 0x0, NULL, HFILL }},
+        { &hf_jbl_call_type,
+            { "Call Type", "jbl.call_type", FT_UINT8, BASE_DEC,
+                VALS (type_names), 0x0, NULL, HFILL }},
         { &hf_jbl_len,
             { "Length", "jbl.len", FT_UINT32, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }},
@@ -1333,6 +1418,9 @@ void proto_register_jbl(void) {
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_event_name,
             { "Event Name", "jbl.event_name", FT_STRING, BASE_NONE,
+                NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_error,
+            { "Error", "jbl.error", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_kwargs,
             { "Keyworded-Args", "jbl.kwargs", FT_UINT32, BASE_DEC,
