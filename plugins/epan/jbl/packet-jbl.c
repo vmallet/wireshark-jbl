@@ -153,6 +153,7 @@ static struct _info_builder {
 
 
 typedef struct _jbl_conv_data {
+    wmem_map_t *strings; // str -> str string interning map
     wmem_map_t *sub_reqs; // seq_num -> event_name
     wmem_map_t *subs; // sub_id -> event_name
     wmem_map_t *rpc_reqs; // seq_num -> rpc_name
@@ -324,13 +325,23 @@ static gint64 * make_durable_key_int64(gint64 key_val) {
     return key;
 }
 
+//TODO: ideally find a way to intern at the "file" scope, not the conversation scope
+static const char * jbl_intern_string(jbl_conv_data_t *data, const char *s) {
+    const char * interned = wmem_map_lookup(data->strings, s);
+    if (interned == NULL) {
+        interned = wmem_strdup(wmem_file_scope(), s);
+        wmem_map_insert(data->strings, interned, (void *) interned);
+    }
+    return interned;
+}
+
 static void init_conv_data(jbl_conv_data_t *data) {
+    //TODO: it would be great to have strings tied to a file, not a specific conversation
+    data->strings = wmem_map_new(wmem_file_scope(), wmem_str_hash, g_str_equal);
     data->sub_reqs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
     data->subs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
     data->rpc_reqs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
     data->rpcs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
-
-    wmem_map_insert(data->subs, make_durable_key_int64(42), "salut les amis");
 }
 
 static jbl_conv_data_t * get_or_create_conv_data(packet_info *pinfo) {
@@ -614,9 +625,9 @@ static int decode_msg_subscribe(tvbuff_t *tvb, int offset, int len _U_, packet_i
     proto_tree_add_string(jbl, hf_jbl_event_name, tvb, offset, 0, event_name);
     info_builder_append_abbrev_max(&info_builder, event_name, 48);
     
-    const char *durable_name = wmem_strdup(wmem_file_scope(), event_name);
-    gint64 *key = make_durable_key_int64(seq_num);
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+    gint64 *key = make_durable_key_int64(seq_num);
+    const char *durable_name = jbl_intern_string(data, event_name);
     wmem_map_insert(data->sub_reqs, key, (void *) durable_name);
     return 0;
 }
@@ -708,9 +719,9 @@ static int decode_msg_register(tvbuff_t *tvb, int offset, int len _U_, packet_in
     proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
     info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
 
-    const char *durable_name = wmem_strdup(wmem_file_scope(), rpc_name);
-    gint64 *key = make_durable_key_int64(seq_num);
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+    gint64 *key = make_durable_key_int64(seq_num);
+    const char *durable_name = jbl_intern_string(data, rpc_name);
     wmem_map_insert(data->rpc_reqs, key, (void *) durable_name);
     return 0;
 }
