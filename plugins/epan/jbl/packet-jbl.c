@@ -310,20 +310,9 @@ static void reset_state() {
     info_builder_init(&info_builder, INFO_BUILDER_SIZE);
 }
 
-
-//static void
-//set_col_info(packet_info *pinfo, char *buf, int truncate_size)
-//{
-//    char c = buf[truncate_size];
-//    buf[truncate_size] = '\0';
-//    col_add_str(pinfo->cinfo, COL_INFO, buf);
-//    buf[truncate_size] = c;
-//}
-
 static void error(char *msg) { //TODO: do something useful
     fprintf(stderr, "%s\n", msg);
 }
-
 
 static gint64 * make_durable_key_int64(gint64 key_val) {
     gint64 * key = wmem_alloc(wmem_file_scope(), sizeof(gint64));
@@ -483,10 +472,9 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
                             
 
     // Empty map
-    p_next++; // still safe
-    // TODO: name it
-    //TODO: do it;
-    
+    p_next++;
+    // TODO: figure out what it is
+
 
     // event name
     p_next++;
@@ -521,7 +509,6 @@ static int decode_msg_publish(tvbuff_t *tvb, int offset, int len _U_, packet_inf
     return 0;
 }
 
-//TODO: brutal clone of decode_msg_publish for now; try to reuse a bit more once it becomes apparent
 static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info *pinfo _U_,
                             proto_tree *jbl, msgpack_object *p_next, msgpack_object *p_end) {
     // [36, 10, 4588522949814990, {}, ["ir-power", "0"]]
@@ -546,12 +533,10 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
     char * event_name = wmem_map_lookup(data->subs, &sub_id);
     if (!event_name) {
-        fprintf(stderr, "NOT FOUND SUB: %lld\n", sub_id);
         info_builder_append(&info_builder, "SubId=");
         info_builder_append_num(&info_builder, sub_id);
     } else {
         proto_tree_add_string(jbl, hf_jbl_event_name, tvb, offset, 0, event_name);
-        fprintf(stderr, "YESSSSSSSS: %lld: %s\n", sub_id, event_name);
         info_builder_append_abbrev_max(&info_builder, event_name, 48);
     }
 
@@ -570,12 +555,11 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
 
 
     // Empty map
-    p_next++; // still safe
-    // TODO: name it
-    //TODO: do it;
+    p_next++;
+    // TODO: figure out what it is
 
 
-    // event args
+    // Event args
     p_next++;
     if (p_next >= p_end) {
         return 0;
@@ -584,7 +568,6 @@ static int decode_msg_event(tvbuff_t *tvb, int offset, int len _U_, packet_info 
         return 1;
     }
 
-    //TODO: revisit kwargs, they need some real attention
     // Event kwargs
     p_next++;
     if (p_next >= p_end) {
@@ -619,10 +602,9 @@ static int decode_msg_subscribe(tvbuff_t *tvb, int offset, int len _U_, packet_i
     proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
 
     // Empty map
-    p_next++; // still safe
-    // TODO: name it
-    //TODO: do it;
-    
+    p_next++;
+    // TODO: figure out what it is
+
     // event name
     p_next++;
     if (p_next->type != MSGPACK_OBJECT_STR) {
@@ -669,20 +651,18 @@ static int decode_msg_subscribed(tvbuff_t *tvb, int offset, int len _U_, packet_
         return 1;
     }
     
-    gint64 sub_id = p_next->via.i64; //TODO: is it really an int64?
+    guint64 sub_id = p_next->via.u64;
     proto_tree_add_uint64(jbl, hf_jbl_sub_id, tvb, offset, 0, sub_id);
 
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
     char * event_name = wmem_map_lookup(data->sub_reqs, &seq_num);
     if (event_name) {
-        fprintf(stderr, "found mapping! %s\n", event_name);
         gint64 *key = make_durable_key_int64(sub_id);
         wmem_map_insert(data->subs, key, event_name);
         info_builder_append_abbrev_max(&info_builder, event_name, 48);
         proto_item * evt_item = proto_tree_add_string(jbl, hf_jbl_event_name, tvb, offset, 0, event_name);
         proto_item_set_generated(evt_item);
     } else {
-        fprintf(stderr, "subscribe miss: seq_num = %lld\n", seq_num);
         info_builder_append_num(&info_builder, seq_num);
     }
     info_builder_append(&info_builder, " => ");
@@ -713,9 +693,8 @@ static int decode_msg_register(tvbuff_t *tvb, int offset, int len _U_, packet_in
     proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
 
     // Empty map
-    p_next++; // still safe
-    // TODO: name it
-    //TODO: do it;
+    p_next++;
+    // TODO: figure out what it is
 
     // RPC name
     p_next++;
@@ -769,14 +748,12 @@ static int decode_msg_registered(tvbuff_t *tvb, int offset, int len _U_, packet_
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
     char * rpc_name = wmem_map_lookup(data->rpc_reqs, &seq_num);
     if (rpc_name) {
-        fprintf(stderr, "found mapping! %s\n", rpc_name);
         gint64 *key = make_durable_key_int64(rpc_id);
         wmem_map_insert(data->rpcs, key, rpc_name);
         info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
         proto_item * rpc_item = proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
         proto_item_set_generated(rpc_item);
     } else {
-        fprintf(stderr, "register miss: seq_num = %lld\n", seq_num);
         info_builder_append_num(&info_builder, seq_num);
     }
     info_builder_append(&info_builder, " => ");
@@ -811,9 +788,8 @@ static int decode_msg_call(tvbuff_t *tvb, int offset, int len _U_, packet_info *
 
 
     // Empty map
-    p_next++; // still safe
-    // TODO: name it
-    //TODO: do it;
+    p_next++;
+    // TODO: figure out what it is
 
 
     // RPC name
@@ -899,10 +875,9 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
 
 
     // Empty map
-    p_next++; // still safe
-    // TODO: name it
-    //TODO: do it;
-    
+    p_next++;
+    // TODO: figure out what it is
+
 
     // Call Result Args
     p_next++;
@@ -964,12 +939,10 @@ static int decode_msg_invoke(tvbuff_t *tvb, int offset, int len _U_, packet_info
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
     char * rpc_name = wmem_map_lookup(data->rpcs, &rpc_id);
     if (rpc_name) {
-        fprintf(stderr, "found mapping! %s\n", rpc_name);
         info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
         proto_item * rpc_item = proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
         proto_item_set_generated(rpc_item);
     } else {
-        fprintf(stderr, "Invoke miss: seq_num = %llu\n", rpc_id);
         info_builder_append(&info_builder, "RpcId=");
         info_builder_append_num(&info_builder, rpc_id);
     }
@@ -982,9 +955,8 @@ static int decode_msg_invoke(tvbuff_t *tvb, int offset, int len _U_, packet_info
 
 
     // Empty map
-    p_next++; // still safe
-    // TODO: name it
-    //TODO: do it;
+    p_next++;
+    // TODO: figure out what it is
 
 
     // Invoke args
@@ -1050,9 +1022,8 @@ static int decode_msg_yield(tvbuff_t *tvb, int offset, int len _U_, packet_info 
 
 
     // Empty map
-    p_next++; // still safe
-    // TODO: name it
-    //TODO: do it;
+    p_next++;
+    // TODO: figure out what it is
 
 
     // Yield Args
@@ -1139,9 +1110,8 @@ static int decode_msg_error(tvbuff_t *tvb, int offset, int len _U_, packet_info 
 
 
     // Empty map
-    p_next++; // still safe
-    // TODO: name it
-    //TODO: do it;
+    p_next++;
+    // TODO: figure out what it is
 
 
     // Error
