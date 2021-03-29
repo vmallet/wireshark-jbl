@@ -149,6 +149,9 @@ static gboolean jbl_abbreviate = TRUE;
 /* Whether or not to resolve seq_num -> rpc_name for CallResult / Yield */
 static gboolean jbl_resolve_calls = TRUE;
 
+/* Used to intern strings on a per-file basis */
+static wmem_map_t * jbl_strings = NULL;
+
 static struct _info_builder {
     char * buf;
     int size;
@@ -170,7 +173,6 @@ typedef struct _jbl_call_info {
 } jbl_call_info_t;
 
 typedef struct _jbl_conv_data {
-    wmem_map_t *strings; // str -> str string interning map
     wmem_map_t *sub_reqs; // seq_num -> event_name
     wmem_map_t *subs; // sub_id -> event_name
     wmem_map_t *rpc_reqs; // seq_num -> rpc_name
@@ -179,6 +181,16 @@ typedef struct _jbl_conv_data {
     wmem_map_t *invokes; // seq_num -> jbl_call_info_t;
 } jbl_conv_data_t;
 
+/* Init per-file data structures; called when starting work on a new file */
+static void jbl_init(void) {
+    jbl_strings = wmem_map_new(wmem_file_scope(), wmem_str_hash, g_str_equal);
+}
+
+/* Clean up per-file data structures; called when done working on a file */
+static void jbl_cleanup(void) {
+    wmem_free(wmem_file_scope(), jbl_strings);
+    jbl_strings = NULL;
+}
 
 
 #define MAX_TEMP_STR_SIZE 2048
@@ -333,19 +345,17 @@ static gint64 * make_durable_key_int64(gint64 key_val) {
     return key;
 }
 
-//TODO: ideally find a way to intern at the "file" scope, not the conversation scope
-static const char * jbl_intern_string(jbl_conv_data_t *data, const char *s) {
-    const char * interned = wmem_map_lookup(data->strings, s);
+
+static const char * jbl_intern_string(const char *s) {
+    const char * interned = wmem_map_lookup(jbl_strings, s);
     if (interned == NULL) {
         interned = wmem_strdup(wmem_file_scope(), s);
-        wmem_map_insert(data->strings, interned, (void *) interned);
+        wmem_map_insert(jbl_strings, interned, (void *) interned);
     }
     return interned;
 }
 
 static void init_conv_data(jbl_conv_data_t *data) {
-    //TODO: it would be great to have strings tied to a file, not a specific conversation
-    data->strings = wmem_map_new(wmem_file_scope(), wmem_str_hash, g_str_equal);
     data->sub_reqs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
     data->subs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
     data->rpc_reqs = wmem_map_new(wmem_file_scope(), g_int64_hash, g_int64_equal);
@@ -639,7 +649,7 @@ static int decode_msg_subscribe(tvbuff_t *tvb, int offset, int len _U_, packet_i
     
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
     gint64 *key = make_durable_key_int64(seq_num);
-    const char *durable_name = jbl_intern_string(data, event_name);
+    const char *durable_name = jbl_intern_string(event_name);
     wmem_map_insert(data->sub_reqs, key, (void *) durable_name);
     return 0;
 }
@@ -730,7 +740,7 @@ static int decode_msg_register(tvbuff_t *tvb, int offset, int len _U_, packet_in
 
     jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
     gint64 *key = make_durable_key_int64(seq_num);
-    const char *durable_name = jbl_intern_string(data, rpc_name);
+    const char *durable_name = jbl_intern_string(rpc_name);
     wmem_map_insert(data->rpc_reqs, key, (void *) durable_name);
     return 0;
 }
@@ -828,7 +838,7 @@ static int decode_msg_call(tvbuff_t *tvb, int offset, int len _U_, packet_info *
     if (jbl_resolve_calls) {
         jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
         jbl_call_info_t *info = get_or_create_call_info(data->calls, seq_num);
-        const char *durable_name = jbl_intern_string(data, rpc_name);
+        const char *durable_name = jbl_intern_string(rpc_name);
         //TODO: could check existence of differing previous values and cry if so
         info->rpc_name = durable_name;
         info->call_frame = pinfo->fd->num;
@@ -1557,6 +1567,9 @@ void proto_register_jbl(void) {
     proto_register_field_array(proto_jbl, hf, array_length(hf));
     proto_register_subtree_array(ett, array_length(ett));
 
+    register_init_routine(jbl_init);
+    register_cleanup_routine(jbl_cleanup);
+
     module_t * jbl_module = prefs_register_protocol(proto_jbl, NULL);
 
     prefs_register_bool_preference(jbl_module, "desegment",
@@ -1583,6 +1596,7 @@ void proto_register_jbl(void) {
 
 void proto_reg_handoff_jbl(void) {
     static dissector_handle_t jbl_handle;
+
 
     jbl_handle = create_dissector_handle(dissect_jbl, proto_jbl);
     dissector_add_uint_with_preference("tcp.port", JBL_PORT, jbl_handle);
