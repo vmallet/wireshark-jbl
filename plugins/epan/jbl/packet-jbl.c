@@ -50,6 +50,8 @@ static int hf_jbl_sub_id = -1;
 static int hf_jbl_rpc_name = -1;
 static int hf_jbl_rpc_id = -1;
 static int hf_jbl_error = -1;
+static int hf_jbl_call_frame = -1;
+static int hf_jbl_result_frame = -1;
 
 static int hf_jbl_kwargs = -1;
 static int hf_jbl_kwarg_key = -1;
@@ -155,6 +157,17 @@ static struct _info_builder {
     NULL, 0, NULL
 };
 
+/**
+ * Used to keep track of cross-call data:
+ *  - rpc_name: name of RPC called (or invoked)
+ *  - frame number where the call/invocation was made
+ *  - frame number where the results were returned (or error is applicable)
+ */
+typedef struct _jbl_call_info {
+    const char * rpc_name;
+    guint32 call_frame;
+    guint32 result_frame;
+} jbl_call_info_t;
 
 typedef struct _jbl_conv_data {
     wmem_map_t *strings; // str -> str string interning map
@@ -162,8 +175,8 @@ typedef struct _jbl_conv_data {
     wmem_map_t *subs; // sub_id -> event_name
     wmem_map_t *rpc_reqs; // seq_num -> rpc_name
     wmem_map_t *rpcs; // rpc_id -> rpc_name
-    wmem_map_t *calls; // seq_num -> rpc_name
-    wmem_map_t *invokes; // seq_num -> rpc_name
+    wmem_map_t *calls; // seq_num -> jbl_call_info_t;
+    wmem_map_t *invokes; // seq_num -> jbl_call_info_t;
 } jbl_conv_data_t;
 
 
@@ -364,6 +377,15 @@ static jbl_conv_data_t * get_or_create_conv_data(packet_info *pinfo) {
     return data;
 }
 
+static jbl_call_info_t * get_or_create_call_info(wmem_map_t *map, gint64 key) {
+    jbl_call_info_t * info = wmem_map_lookup(map, &key);
+    if (info == NULL) {
+        info = wmem_alloc(wmem_file_scope(), sizeof(*info));
+        gint64 *durable_key = make_durable_key_int64(key);
+        wmem_map_insert(map, durable_key, (void *) info);
+    }
+    return info;
+}
 
 static int process_args(proto_tree *jbl, int offset, msgpack_object *p_next, tvbuff_t *tvb) {
     msgpack_object *args = p_next;
@@ -802,11 +824,20 @@ static int decode_msg_call(tvbuff_t *tvb, int offset, int len _U_, packet_info *
     proto_tree_add_string(jbl, hf_jbl_rpc_name, tvb, offset, 0, rpc_name);
     info_builder_append_abbrev_max(&info_builder, rpc_name, 48);
 
+    guint32 result_fnum = 0;
     if (jbl_resolve_calls) {
         jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
-        gint64 *key = make_durable_key_int64(seq_num);
+        jbl_call_info_t *info = get_or_create_call_info(data->calls, seq_num);
         const char *durable_name = jbl_intern_string(data, rpc_name);
-        wmem_map_insert(data->calls, key, (void *) durable_name);
+        //TODO: could check existence of differing previous values and cry if so
+        info->rpc_name = durable_name;
+        info->call_frame = pinfo->fd->num;
+        result_fnum = info->result_frame;
+    }
+
+    if (result_fnum != 0) {
+        proto_item * result_item = proto_tree_add_uint(jbl, hf_jbl_result_frame, tvb, offset, 0, result_fnum);
+        proto_item_set_generated(result_item);
     }
 
 
@@ -857,10 +888,14 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
     guint64 seq_num = p_next->via.u64;
     proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
 
-    char *rpc_name = NULL;
+    const char *rpc_name = NULL;
+    guint32 caller_fnum = 0;
     if (jbl_resolve_calls) {
         jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
-        rpc_name = wmem_map_lookup(data->calls, &seq_num);
+        jbl_call_info_t *info = get_or_create_call_info(data->calls, seq_num);
+        rpc_name = info->rpc_name;
+        caller_fnum = info->call_frame;
+        info->result_frame = pinfo->fd->num;
     }
 
     if (rpc_name != NULL) {
@@ -873,6 +908,10 @@ static int decode_msg_call_result(tvbuff_t *tvb, int offset, int len _U_, packet
     }
     info_builder_append(&info_builder, " =>");
 
+    if (caller_fnum) {
+        proto_item * calling_item = proto_tree_add_uint(jbl, hf_jbl_call_frame, tvb, offset, 0, caller_fnum);
+        proto_item_set_generated(calling_item);
+    }
 
     // Empty map
     p_next++;
@@ -947,10 +986,21 @@ static int decode_msg_invoke(tvbuff_t *tvb, int offset, int len _U_, packet_info
         info_builder_append_num(&info_builder, rpc_id);
     }
 
-    if (jbl_resolve_calls && rpc_name != NULL) {
-        gint64 *key = make_durable_key_int64(seq_num);
-        // Note: rpc_name came from our lookup, it's already interned
-        wmem_map_insert(data->invokes, key, (void *) rpc_name);
+    guint32 result_fnum = 0;
+    if (jbl_resolve_calls) {
+        jbl_call_info_t *info = get_or_create_call_info(data->invokes, seq_num);
+        if (rpc_name != NULL) {
+            // Note: rpc_name came from our lookup, it's already interned
+            //TODO: could check existence of differing previous values and cry if so
+            info->rpc_name = rpc_name;
+        }
+        info->call_frame = pinfo->fd->num;
+        result_fnum = info->result_frame;
+    }
+
+    if (result_fnum != 0) {
+        proto_item * result_item = proto_tree_add_uint(jbl, hf_jbl_result_frame, tvb, offset, 0, result_fnum);
+        proto_item_set_generated(result_item);
     }
 
 
@@ -1004,10 +1054,14 @@ static int decode_msg_yield(tvbuff_t *tvb, int offset, int len _U_, packet_info 
     guint64 seq_num = p_next->via.u64;
     proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
 
-    char *rpc_name = NULL;
+    const char *rpc_name = NULL;
+    guint32 caller_fnum = 0;
     if (jbl_resolve_calls) {
         jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
-        rpc_name = wmem_map_lookup(data->invokes, &seq_num);
+        jbl_call_info_t *info = get_or_create_call_info(data->invokes, seq_num);
+        rpc_name = info->rpc_name;
+        caller_fnum = info->call_frame;
+        info->result_frame = pinfo->fd->num;
     }
 
     if (rpc_name != NULL) {
@@ -1019,6 +1073,11 @@ static int decode_msg_yield(tvbuff_t *tvb, int offset, int len _U_, packet_info 
         info_builder_append_num(&info_builder, seq_num);
     }
     info_builder_append(&info_builder, " =>");
+
+    if (caller_fnum) {
+        proto_item * calling_item = proto_tree_add_uint(jbl, hf_jbl_call_frame, tvb, offset, 0, caller_fnum);
+        proto_item_set_generated(calling_item);
+    }
 
 
     // Empty map
@@ -1080,19 +1139,27 @@ static int decode_msg_error(tvbuff_t *tvb, int offset, int len _U_, packet_info 
     guint64 seq_num = p_next->via.u64;
     proto_tree_add_uint64(jbl, hf_jbl_seq_num, tvb, offset, 0, seq_num);
 
-    char *rpc_name = NULL;
+    const char *rpc_name = NULL;
+    guint32 caller_fnum = 0;
     if (jbl_resolve_calls) {
         jbl_conv_data_t *data = get_or_create_conv_data(pinfo);
+        jbl_call_info_t *info;
         switch (call_type) {
             case JBL_MSG_CALL:
-                rpc_name = wmem_map_lookup(data->calls, &seq_num);
+                info = get_or_create_call_info(data->calls, seq_num);
                 break;
             case JBL_MSG_INVOKE_RPC:
-                rpc_name = wmem_map_lookup(data->invokes, &seq_num);
+                info = get_or_create_call_info(data->invokes, seq_num);
                 break;
             default:
                 // TODO: we could consider logging this; what other type could it be?
+                info = NULL;
                 break;
+        }
+        if (info != NULL) {
+            rpc_name = info->rpc_name;
+            caller_fnum = info->call_frame;
+            info->result_frame = pinfo->fd->num;
         }
     }
 
@@ -1107,6 +1174,11 @@ static int decode_msg_error(tvbuff_t *tvb, int offset, int len _U_, packet_info 
     info_builder_append(&info_builder, " (");
     info_builder_append(&info_builder, val_to_str(call_type, type_names, "Unknown (%d)"));
     info_builder_append(&info_builder, ") => ");
+
+    if (caller_fnum) {
+        proto_item * calling_item = proto_tree_add_uint(jbl, hf_jbl_call_frame, tvb, offset, 0, caller_fnum);
+        proto_item_set_generated(calling_item);
+    }
 
 
     // Empty map
@@ -1392,6 +1464,12 @@ void proto_register_jbl(void) {
         { &hf_jbl_error,
             { "Error", "jbl.error", FT_STRING, BASE_NONE,
                 NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_call_frame,
+          { "Response from call in frame", "jbl.call_frame", FT_FRAMENUM, BASE_NONE,
+              NULL, 0x0, NULL, HFILL }},
+        { &hf_jbl_result_frame,
+          { "Response in frame", "jbl.result_frame", FT_FRAMENUM, BASE_NONE,
+              NULL, 0x0, NULL, HFILL }},
         { &hf_jbl_kwargs,
             { "Keyworded-Args", "jbl.kwargs", FT_UINT32, BASE_DEC,
                 NULL, 0x0, NULL, HFILL }},
@@ -1493,10 +1571,12 @@ void proto_register_jbl(void) {
                                    "\"com.harman.HDMI\" -> \"c.h.HDMI\"",
                                    &jbl_abbreviate);
     prefs_register_bool_preference(jbl_module, "resolve_calls",
-                                   "Resolve names in RPC calls (CallResult/Yield)",
-                                   "Keep track of RPC names used in each Call and Invoke "
-                                   "message to be able to resolve RPC names in CallResult "
-                                   "and Yield messages. Uses more memory, but not too much.",
+                                   "Resolve cross-call data (RPC names, frame refs)",
+                                   "Keep track of RPC names and frame nubmers used in each "
+                                   "Call and Invoke message to be able to resolve RPC names "
+                                   "in CallResult and Yield messages, along with frame references "
+                                   "for where a call was made or results obtained. Uses more memory, "
+                                   "but not too much.",
                                    &jbl_resolve_calls);
 }
 
